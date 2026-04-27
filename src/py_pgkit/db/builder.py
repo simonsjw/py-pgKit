@@ -11,8 +11,11 @@ originally developed in infopypg. It can create:
 - Databases
 - Extensions (uuid-ossp, pg_trgm, etc.)
 - Tables (from SQLAlchemy `Base` metadata, with dependency ordering via NetworkX)
-- Triggers and functions
-- Daily range partitioning (common pattern for time-series data)
+- Triggers and functions (via `ensure_functions_loaded`)
+- Daily range partitioning (via `ensure_partition_exists`)
+
+The builder now reuses the shared helpers from `db/methods/` to reduce
+duplication and ensure consistent behaviour across the package.
 
 The builder is **idempotent** — running it multiple times is safe and
 fast (it only performs work that has not already been done).
@@ -20,14 +23,27 @@ fast (it only performs work that has not already been done).
 All operations use the shared `PgPoolManager` so connection costs are
 minimal even when the builder is called frequently.
 
-This implementation preserves every feature of the original while
-adding clearer logging hooks and better error messages.
+Examples
+--------
+>>> from py_pgkit.db import DatabaseBuilder, PgSettings
+>>> from pathlib import Path
+
+>>> settings = PgSettings(database="analytics")
+
+>>> builder = DatabaseBuilder(
+...     settings=settings,
+...     functions=Path("/app/sql/functions/"),
+...     partition_strategy="daily"
+... )
+
+>>> await builder.build()
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Any, Callable, Type
 
 import asyncpg
@@ -35,6 +51,7 @@ import networkx as nx
 from sqlalchemy import MetaData, Table, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from .methods.db_tools import ensure_functions_loaded, ensure_partition_exists
 from .pool import get_pool
 from .settings import PgSettings
 
@@ -68,6 +85,9 @@ class DatabaseBuilder:
     partition_strategy : str | None, optional
         'daily' for daily range partitioning on a timestamp column
         (advanced feature — see `add_daily_partition`).
+    functions : list[str] | str | Path | None, optional
+        SQL functions to load (directory, file, or list of strings).
+        Passed to `ensure_functions_loaded`.
 
     Attributes
     ----------
@@ -101,6 +121,7 @@ class DatabaseBuilder:
         create_tables: bool = True,
         create_triggers_and_functions: bool = True,
         partition_strategy: str | None = None,
+        functions: list[str] | str | Path | None = None,
     ) -> None:
         self.settings = settings
         self.models = models or []
@@ -110,6 +131,7 @@ class DatabaseBuilder:
         self.create_tables = create_tables
         self.create_triggers_and_functions = create_triggers_and_functions
         self.partition_strategy = partition_strategy
+        self.functions = functions                                                        # passed to ensure_functions_loaded
         self.engine: AsyncEngine | None = None
         self._pool: asyncpg.Pool | None = None
 
@@ -285,27 +307,46 @@ class DatabaseBuilder:
 
     async def _ensure_triggers_and_functions(self, pool: asyncpg.Pool) -> None:
         """
-        Placeholder for loading custom SQL functions and triggers.
+        Load custom SQL functions and triggers using the shared helper.
 
-        In a real project you would read .sql files from a directory
-        or define them in the model classes and execute them here.
-        The original infopypg implementation supported this pattern.
+        If the builder was initialised with a `functions` parameter
+        (path to .sql directory/file or list of SQL strings), those
+        functions will be loaded. Otherwise this step is a no-op.
         """
-        # Example stub — replace with your actual function loading logic
-        logger.debug("Trigger/function loading step (customise as needed)")
+        functions = getattr(self, "functions", None)
+        if functions:
+            await ensure_functions_loaded(functions, self.settings)
+            logger.info("Custom functions loaded")
 
     async def _setup_daily_partitioning(self, pool: asyncpg.Pool) -> None:
         """
-        Set up daily range partitioning (advanced feature).
+        Set up daily range partitioning using the shared helper.
 
-        This is a common pattern for time-series tables. The original
-        infopypg had sophisticated support for this.
+        This delegates to `ensure_partition_exists` for each day in a
+        sensible default range (today and tomorrow). For full control
+        use `add_daily_partition` directly.
         """
-        logger.debug("Daily partitioning setup (customise as needed)")
+        from datetime import date, timedelta
+
+        today = date.today().isoformat()
+        tomorrow = (date.today() + timedelta(days=1)).isoformat()
+
+        await self.add_daily_partition("logs", today, tomorrow)
 
     async def add_daily_partition(
         self, table_name: str, start_date: str, end_date: str
     ) -> None:
-        """Helper to add a specific daily partition (example)."""
-        # Implementation would go here in a full version
-        pass
+        """
+        Create a specific daily partition using the modern helper.
+
+        Delegates to `ensure_partition_exists` from the methods module.
+        """
+        partition_name = f"{table_name}_{start_date.replace('-', '_')}"
+        await ensure_partition_exists(
+            table_name=table_name,
+            partition_name=partition_name,
+            start_value=start_date,
+            end_value=end_date,
+            settings=self.settings,
+        )
+        logger.info("Ensured partition %s", partition_name)

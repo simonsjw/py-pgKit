@@ -6,17 +6,14 @@ High-performance data loading utilities for PostgreSQL.
 
 These functions provide convenient ways to pull data from the database
 into Python memory (list of dictionaries) for further processing,
-analysis, or caching. They were originally part of `loaddb.py` in
-infopypg and have been modernised with Pydantic settings and the
-shared connection pool.
-
-All functions are fully asynchronous and use the global pool for
-maximum efficiency.
+analysis, or caching. They use Pydantic settings, are asycghronous and
+use the global shared connection pool for maximum efficiency.
 """
 
 from __future__ import annotations
 
-from typing import Any
+import itertools
+from typing import Any, Iterable
 
 import asyncpg
 
@@ -114,3 +111,54 @@ async def load_query_to_memory(
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, *(params or []))
         return [dict(row) for row in rows]
+
+
+def _chunked(iterable: Iterable[Any], size: int):
+    """Yield successive chunks from an iterable."""
+    it = iter(iterable)
+    while True:
+        chunk = list(itertools.islice(it, size))
+        if not chunk:
+            return
+        yield chunk
+
+
+async def bulk_insert(
+    table_name: str,
+    records: list[dict[str, Any]] | list[tuple[Any, ...]],
+    settings: PgSettings,
+    columns: list[str] | None = None,
+    batch_size: int = 1000,
+) -> int:
+    """
+    High-performance bulk insert using asyncpg's COPY protocol with batching.
+
+    ...
+    """
+    if not records:
+        return 0
+
+    pool = await get_pool(settings)
+
+    # Determine columns
+    if columns is None:
+        if isinstance(records[0], dict):
+            columns = list(records[0].keys())
+        else:
+            raise ValueError("columns parameter is required when using list of tuples")
+
+    # Convert dicts to tuples if necessary
+    if isinstance(records[0], dict):
+        records = [tuple(record[col] for col in columns) for record in records]
+
+    total_inserted = 0
+    async with pool.acquire() as conn:
+        for chunk in _chunked(records, batch_size):
+            await conn.copy_records_to_table(
+                table_name,
+                records=chunk,
+                columns=columns,
+            )
+            total_inserted += len(chunk)
+
+    return total_inserted

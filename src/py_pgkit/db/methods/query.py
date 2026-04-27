@@ -139,3 +139,78 @@ async def run_multi_statement_sql_script(
                     break
 
     return results
+
+
+async def query_logs(
+    settings: PgSettings,
+    level: str | None = None,
+    logger_name: str | None = None,
+    limit: int = 100,
+    order_by: str = "tstamp DESC",
+    start_time: str | None = None,
+    end_time: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Convenience wrapper to query the structured logs table.
+
+    This was originally exposed in the `logger` package as `query_logs`.
+    It provides a simple, safe way to retrieve recent log entries with
+    optional filtering.
+
+    Parameters
+    ----------
+    settings : PgSettings
+        Connection settings (must point to the database containing the logs table).
+    level : str | None, optional
+        Filter by log level (e.g. "INFO", "ERROR").
+    logger_name : str | None, optional
+        Filter by logger name (supports partial match with LIKE).
+    limit : int, optional
+        Maximum number of rows to return (default 100).
+    order_by : str, optional
+        ORDER BY clause (default "tstamp DESC").
+    start_time : str | None, optional
+        Filter logs after this timestamp (ISO format recommended).
+    end_time : str | None, optional
+        Filter logs before this timestamp (ISO format recommended).
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        List of log records as dictionaries.
+
+    Examples
+    --------
+    >>> recent_errors = await query_logs(settings, level="ERROR", limit=50)
+    >>> app_logs = await query_logs(settings, logger_name="myapp", start_time="2026-04-01")
+    """
+    pool = await get_pool(settings)
+
+    conditions = []
+    params: list[Any] = []
+
+    if level:
+        conditions.append("loglvl = $1")
+        params.append(level.upper())
+    if logger_name:
+        conditions.append(f"logger LIKE ${len(params) + 1}")
+        params.append(f"%{logger_name}%")
+    if start_time:
+        conditions.append(f"tstamp >= ${len(params) + 1}")
+        params.append(start_time)
+    if end_time:
+        conditions.append(f"tstamp <= ${len(params) + 1}")
+        params.append(end_time)
+
+    where_clause = " AND ".join(conditions) if conditions else "1=1"
+    query = f"""
+        SELECT idx, tstamp, loglvl, logger, message, obj
+        FROM logs
+        WHERE {where_clause}
+        ORDER BY {order_by}
+        LIMIT {limit}
+    """
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(query, *params)
+        return [dict(row) for row in rows]

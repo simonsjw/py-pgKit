@@ -54,7 +54,20 @@ from __future__ import annotations
 
 # Re-export logging submodule for the nice `pgk.logging.getLogger` experience
 from . import logging
-from .db import DatabaseBuilder, PgSettings, close_all_pools, get_pool
+from .db import (
+    DatabaseBuilder,
+    PgSettings,
+    bulk_insert,
+    close_all_pools,
+    ensure_functions_loaded,
+    ensure_partition_exists,
+    execute_query,
+    get_pool,
+    load_query_to_memory,
+    load_table_to_memory,
+    query_logs,
+    run_multi_statement_sql_script,
+)
 from .logging import getLogger as logging_getLogger                                       # for convenience
 
 __all__ = [
@@ -62,6 +75,14 @@ __all__ = [
     "get_pool",
     "close_all_pools",
     "DatabaseBuilder",
+    "load_table_to_memory",
+    "load_query_to_memory",
+    "bulk_insert",
+    "execute_query",
+    "run_multi_statement_sql_script",
+    "query_logs",
+    "ensure_functions_loaded",
+    "ensure_partition_exists",
     "logging",
     "logging_getLogger",
 ]
