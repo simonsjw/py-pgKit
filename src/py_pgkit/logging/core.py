@@ -98,32 +98,41 @@ class DBLogHandler(logging.Handler):
         self._table_created = False
 
     async def _ensure_table(self) -> None:
-        """Create the logs table if it does not exist (idempotent)."""
+        """
+        Create the logs table if it does not exist (idempotent and race-safe).
+
+        Uses CREATE TABLE IF NOT EXISTS + defensive exception handling
+        because PostgreSQL's implicit sequence creation for BIGSERIAL can
+        occasionally raise duplicate-key errors on (relname, relnamespace)
+        after previous partial/failed table creations (common when
+        developing and restarting the app many times).
+        """
         if self._table_created:
             return
-        builder = DatabaseBuilder(
-            settings=self.settings,
-            create_tablespace=False,
-            create_database=False,
-            create_extensions=False,
-            create_tables=False,                                                          # we create the table manually below
-            create_triggers_and_functions=False,
-        )
-        # Use the builder's pool but create table directly for simplicity
         pool = await get_pool(self.settings)
         async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS logs (
-                    idx        BIGSERIAL PRIMARY KEY,
-                    tstamp     TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    loglvl     TEXT NOT NULL,
-                    logger     TEXT,
-                    message    TEXT,
-                    obj        JSONB
+            try:
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS logs (
+                        idx        BIGSERIAL PRIMARY KEY,
+                        tstamp     TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        loglvl     TEXT NOT NULL,
+                        logger     TEXT,
+                        message    TEXT,
+                        obj        JSONB
+                    )
+                    """
                 )
-                """
-            )
+            except asyncpg.exceptions.DuplicateTableError:
+                pass                                                                      # Table already exists — perfectly fine
+            except Exception as exc:
+                if "duplicate key value violates unique constraint" in str(exc).lower():
+                    pass                                                                  # Sequence already exists from previous partial creation
+                else:
+                    print(
+                        f"[py_pgkit.logging] Table creation warning: {exc}", flush=True
+                    )
         self._table_created = True
 
     async def _emit_async(self, record: LogRecord) -> None:

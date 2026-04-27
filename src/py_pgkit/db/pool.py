@@ -109,7 +109,7 @@ async def get_pool(settings: PgSettings) -> asyncpg.Pool:
             password=settings.password,
             min_size=settings.pool_min_size,
             max_size=settings.pool_max_size,
-            echo=settings.echo,
+            # echo is a SQLAlchemy-only parameter — do not pass to asyncpg
             # Additional sensible defaults
             command_timeout=60.0,
             server_settings={"application_name": "py-pgkit"},

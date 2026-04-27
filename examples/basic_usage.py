@@ -13,11 +13,11 @@ from py_pgkit.db import PgSettings
 
 async def main():
     settings = PgSettings(
-        host="localhost",
+        host="127.0.0.1",
         port=5432,
         database="testdb",
-        user="postgres",
-        password="postgres",
+        user="testuser",
+        password="testpass",
         extensions=["uuid-ossp"],
     )
 
