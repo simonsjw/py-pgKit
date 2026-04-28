@@ -41,12 +41,14 @@ from .builder import DatabaseBuilder
 from .methods.db_tools import ensure_functions_loaded, ensure_partition_exists
 
 # methods module:
-from .methods.load import load_query_to_memory, load_table_to_memory
-from .methods.query import execute_query, run_multi_statement_sql_script
+from .methods.load import bulk_insert, load_query_to_memory, load_table_to_memory
+from .methods.query import execute_query, query_logs, run_multi_statement_sql_script
 from .pool import close_all_pools, get_pool
 from .settings import PgSettings
 
 __all__ = [
+    "bulk_insert",
+    "query_logs",
     "PgSettings",
     "get_pool",
     "close_all_pools",
