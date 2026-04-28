@@ -15,7 +15,8 @@ from typing import Any
 
 import asyncpg
 
-from py_pgkit.db import PgSettings, get_pool
+from py_pgkit.db.pool import get_pool
+from py_pgkit.db.settings import PgSettings
 
 
 async def execute_query(

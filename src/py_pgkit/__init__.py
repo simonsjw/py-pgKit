@@ -20,7 +20,7 @@ Quick start
 -----------
 ```python
 import py_pgkit as pgk
-from py_pgkit.db import PgSettings
+from py_pgkit.db.settings import PgSettings
 
 settings = PgSettings(
     host="localhost",
@@ -46,7 +46,7 @@ Import style
 `import py_pgkit as pgk` (as requested).
 
 You may also do:
-- `from py_pgkit.db import PgSettings, get_pool, DatabaseBuilder`
+- `from py_pgkit.db.settings import PgSettings, get_pool, DatabaseBuilder`
 - `from py_pgkit import logging as logging` (recommended over bare `import logging`)
 """
 
@@ -68,7 +68,8 @@ from .db import (
     query_logs,
     run_multi_statement_sql_script,
 )
-from .logging import getLogger as logging_getLogger                                       # for convenience
+
+# for convenience
 
 __all__ = [
     "PgSettings",
@@ -102,6 +103,9 @@ def configure_logging(
     This is the recommended way to set up logging for an entire
     application or library ecosystem.
     """
+    # Lazy import to address circular imports.
+    from .logging import getLogger as logging_getLogger
+
     if default_settings is not None:
         # Prime the pool and attach a root DB handler
         root_logger = logging_getLogger(None, conn=default_settings, level=level)

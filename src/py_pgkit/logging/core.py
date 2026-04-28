@@ -215,7 +215,7 @@ def getLogger(
     logger = getLogger(__name__)
 
     # DB-backed (recommended pattern)
-    from py_pgkit.db import PgSettings
+    from py_pgkit.db.settings import PgSettings
     settings = PgSettings(database="logs")
     logger = getLogger(__name__, conn=settings)
     logger.info("User logged in", extra={"obj": {"user_id": 42}})

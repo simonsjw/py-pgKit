@@ -13,19 +13,19 @@ from __future__ import annotations
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from py_pgkit.db.settings import PgSettings
-
 
 # Note: asyncio mode is configured via pyproject.toml [tool.pytest.ini_options]
 # No anyio_backend fixture needed unless pytest-anyio is also in dev deps.
 
 
 @pytest.fixture
-def settings() -> PgSettings:
+def settings():
     """
     Minimal valid PgSettings for testing.
     Uses a non-existent 'testdb' — all DB interactions are mocked in tests.
     """
+    from py_pgkit.db.settings import PgSettings  # local import to avoid circular import at conftest load time
+
     return PgSettings(
         host="localhost",
         port=5432,
@@ -42,15 +42,19 @@ def settings() -> PgSettings:
 def mock_pool_conn():
     """
     Returns (mock_pool, mock_conn) where:
-    - mock_pool.acquire() is an async context manager returning mock_conn
+    - mock_pool.acquire() returns an async context manager that yields mock_conn
     - mock_conn has fetch, execute, copy_records_to_table, fetchval as AsyncMocks
-    - Common setup for testing load/query/bulk/ensure functions.
+    - Works reliably with both real asyncpg and patched get_pool.
     """
-    mock_conn = AsyncMock(spec=["fetch", "execute", "copy_records_to_table", "fetchval"])
-    mock_pool = AsyncMock()
-    # Make acquire() return an async context manager
-    mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
-    mock_pool.acquire.return_value.__aexit__.return_value = False
+    mock_conn = AsyncMock(name="mock_conn", spec=["fetch", "execute", "copy_records_to_table", "fetchval"])
+
+    # Create a proper async context manager for pool.acquire()
+    mock_acquire_cm = AsyncMock(name="acquire_cm")
+    mock_acquire_cm.__aenter__.return_value = mock_conn
+    mock_acquire_cm.__aexit__.return_value = False
+
+    mock_pool = AsyncMock(name="mock_pool")
+    mock_pool.acquire.return_value = mock_acquire_cm
     return mock_pool, mock_conn
 
 

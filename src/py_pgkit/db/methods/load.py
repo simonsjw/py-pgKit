@@ -17,7 +17,8 @@ from typing import Any, Iterable
 
 import asyncpg
 
-from py_pgkit.db import PgSettings, get_pool
+from py_pgkit.db.pool import get_pool
+from py_pgkit.db.settings import PgSettings
 
 
 async def load_table_to_memory(
@@ -54,7 +55,7 @@ async def load_table_to_memory(
     Examples
     --------
     >>> import asyncio
-    >>> from py_pgkit.db import PgSettings
+    >>> from py_pgkit.db.settings import PgSettings
     >>> from py_pgkit.db.methods.load import load_table_to_memory
     >>> settings = PgSettings(database="analytics")
     >>> users = asyncio.run(load_table_to_memory("users", settings, limit=100))

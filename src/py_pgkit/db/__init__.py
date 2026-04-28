@@ -14,7 +14,7 @@ This package re-exports the core component:
 Examples
 --------
 >>> import py_pgkit as pgk
->>> from py_pgkit.db import PgSettings
+>>> from py_pgkit.db.settings import PgSettings
 
 >>> settings = PgSettings(database="analytics")
 
