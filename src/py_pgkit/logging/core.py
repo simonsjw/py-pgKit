@@ -71,7 +71,8 @@ from typing import Any
 
 import asyncpg
 
-from py_pgkit.db import DatabaseBuilder, PgSettings, get_pool
+from py_pgkit.db.pool import get_pool
+from py_pgkit.db.settings import PgSettings
 
 
 class DBLogHandler(logging.Handler):
