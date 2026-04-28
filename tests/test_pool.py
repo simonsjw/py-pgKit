@@ -6,12 +6,12 @@ Focuses on caching logic, key generation, and cleanup.
 """
 
 import asyncio
-import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
+import pytest
 
-from py_pgkit.db.pool import get_pool, close_all_pools, _settings_key, _POOL_REGISTRY
+from py_pgkit.db.pool import _POOL_REGISTRY, _settings_key, close_all_pools, get_pool
 from py_pgkit.db.settings import PgSettings
 
 
@@ -27,7 +27,7 @@ def test_settings_key_consistency(settings):
     key1 = _settings_key(settings)
     key2 = _settings_key(settings)
     assert key1 == key2
-    assert len(key1) == 16  # sha256 hexdigest[:16]
+    assert len(key1) == 16                                                                # sha256 hexdigest[:16]
 
 
 def test_settings_key_ignores_pool_and_echo(settings):
@@ -45,15 +45,17 @@ def test_settings_key_ignores_pool_and_echo(settings):
 
 @pytest.mark.asyncio
 async def test_get_pool_creates_and_caches(settings):
-    with patch("py_pgkit.db.pool.asyncpg.create_pool", new_callable=AsyncMock) as mock_create:
+    with patch(
+        "py_pgkit.db.pool.asyncpg.create_pool", new_callable=AsyncMock
+    ) as mock_create:
         fake_pool = AsyncMock(spec=asyncpg.Pool)
         mock_create.return_value = fake_pool
 
         p1 = await get_pool(settings)
         p2 = await get_pool(settings)
 
-        assert p1 is p2  # cached
-        mock_create.assert_called_once()  # only created once
+        assert p1 is p2                                                                   # cached
+        mock_create.assert_called_once()                                                  # only created once
 
 
 @pytest.mark.asyncio
@@ -65,7 +67,9 @@ async def test_get_pool_different_settings_different_pools(settings):
         password=None,
     )
 
-    with patch("py_pgkit.db.pool.asyncpg.create_pool", new_callable=AsyncMock) as mock_create:
+    with patch(
+        "py_pgkit.db.pool.asyncpg.create_pool", new_callable=AsyncMock
+    ) as mock_create:
         fake1 = AsyncMock()
         fake2 = AsyncMock()
         mock_create.side_effect = [fake1, fake2]
@@ -79,7 +83,9 @@ async def test_get_pool_different_settings_different_pools(settings):
 
 @pytest.mark.asyncio
 async def test_close_all_pools_clears_registry(settings):
-    with patch("py_pgkit.db.pool.asyncpg.create_pool") as mock_create:
+    with patch(
+        "py_pgkit.db.pool.asyncpg.create_pool", new_callable=AsyncMock
+    ) as mock_create:
         fake_pool = AsyncMock()
         mock_create.return_value = fake_pool
 

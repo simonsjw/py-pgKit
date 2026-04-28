@@ -10,9 +10,11 @@ Provides:
 
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+from py_pgkit.db.settings import PgSettings
 
 # Note: asyncio mode is configured via pyproject.toml [tool.pytest.ini_options]
 # No anyio_backend fixture needed unless pytest-anyio is also in dev deps.
@@ -24,7 +26,6 @@ def settings():
     Minimal valid PgSettings for testing.
     Uses a non-existent 'testdb' — all DB interactions are mocked in tests.
     """
-    from py_pgkit.db.settings import PgSettings  # local import to avoid circular import at conftest load time
 
     return PgSettings(
         host="localhost",
@@ -46,7 +47,9 @@ def mock_pool_conn():
     - mock_conn has fetch, execute, copy_records_to_table, fetchval as AsyncMocks
     - Works reliably with both real asyncpg and patched get_pool.
     """
-    mock_conn = AsyncMock(name="mock_conn", spec=["fetch", "execute", "copy_records_to_table", "fetchval"])
+    mock_conn = AsyncMock(
+        name="mock_conn", spec=["fetch", "execute", "copy_records_to_table", "fetchval"]
+    )
 
     # Create a proper async context manager for pool.acquire()
     mock_acquire_cm = AsyncMock(name="acquire_cm")
@@ -71,11 +74,32 @@ def patch_get_pool(mock_pool_conn):
             ...
     """
     mock_pool, mock_conn = mock_pool_conn
-    with patch("py_pgkit.db.get_pool", return_value=mock_pool), \
-         patch("py_pgkit.db.methods.load.get_pool", return_value=mock_pool), \
-         patch("py_pgkit.db.methods.query.get_pool", return_value=mock_pool), \
-         patch("py_pgkit.db.methods.db_tools.get_pool", return_value=mock_pool), \
-         patch("py_pgkit.db.pool.get_pool", return_value=mock_pool):
+    with (
+        patch("py_pgkit.db.get_pool", new_callable=AsyncMock, return_value=mock_pool),
+        patch(
+            "py_pgkit.db.methods.load.get_pool",
+            new_callable=AsyncMock,
+            return_value=mock_pool,
+        ),
+        patch(
+            "py_pgkit.db.methods.query.get_pool",
+            new_callable=AsyncMock,
+            return_value=mock_pool,
+        ),
+        patch(
+            "py_pgkit.db.methods.db_tools.get_pool",
+            new_callable=AsyncMock,
+            return_value=mock_pool,
+        ),                                                                                # ← this was missing
+        patch(
+            "py_pgkit.db.pool.get_pool", new_callable=AsyncMock, return_value=mock_pool
+        ),
+        patch(
+            "py_pgkit.db.builder.get_pool",
+            new_callable=AsyncMock,
+            return_value=mock_pool,
+        ),                                                                                # safety
+    ):
         yield mock_pool, mock_conn
 
 
