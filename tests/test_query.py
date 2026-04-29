@@ -9,13 +9,14 @@ Focus: Troublesome edge cases for multipart SQL scripts in run_multi_statement_s
 - Error collection and partial results
 """
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 from py_pgkit.db.methods.query import (
     execute_query,
-    run_multi_statement_sql_script,
     query_logs,
+    run_multi_statement_sql_script,
 )
 
 
@@ -41,26 +42,29 @@ async def test_execute_query_execute(settings, patch_get_pool):
 
 # ====================== MULTIPART SQL EDGE CASES ======================
 
+
 @pytest.mark.asyncio
-async def test_run_multi_statement_basic(settings, patch_get_pool, multipart_sql_script):
+async def test_run_multi_statement_basic(
+    settings, patch_get_pool, multipart_sql_script
+):
     mock_pool, mock_conn = patch_get_pool
     # Simulate realistic responses
     mock_conn.fetch.side_effect = [
-        [{"id": 1}],           # for the RETURNING INSERT
-        [{"id": 1, "name": "Test User"}],  # SELECT
+        [{"id": 1}],                                                                      # for the RETURNING INSERT
+        [{"id": 1, "name": "Test User"}],                                                 # SELECT
     ]
     mock_conn.execute.side_effect = [
-        "CREATE TABLE",       # CREATE
-        "UPDATE 1",           # UPDATE
+        "CREATE TABLE",                                                                   # CREATE
+        "UPDATE 1",                                                                       # UPDATE
     ]
 
     results = await run_multi_statement_sql_script(multipart_sql_script, settings)
 
     assert len(results) == 4
-    assert results[0] == "CREATE TABLE"          # DDL
-    assert results[1] == [{"id": 1}]             # RETURNING → fetch
-    assert results[2] == [{"id": 1, "name": "Test User"}]  # SELECT
-    assert results[3] == "UPDATE 1"              # DML
+    assert results[0] == "CREATE TABLE"                                                   # DDL
+    assert results[1] == [{"id": 1}]                                                      # RETURNING → fetch
+    assert results[2] == [{"id": 1, "name": "Test User"}]                                 # SELECT
+    assert results[3] == "UPDATE 1"                                                       # DML
 
 
 @pytest.mark.asyncio
@@ -93,7 +97,7 @@ async def test_run_multi_statement_stop_on_error(settings, patch_get_pool):
     mock_conn.execute.side_effect = [
         "OK1",
         Exception("syntax error at statement 2"),
-        "OK3",  # should not be reached
+        "OK3",                                                                            # should not be reached
     ]
 
     script = "CREATE TABLE t; BAD SQL; CREATE TABLE t2;"
@@ -117,7 +121,9 @@ async def test_run_multi_statement_continue_on_error(settings, patch_get_pool):
     mock_conn.fetch.return_value = []
 
     script = "CREATE 1; BAD; CREATE 3;"
-    results = await run_multi_statement_sql_script(script, settings, stop_on_error=False)
+    results = await run_multi_statement_sql_script(
+        script, settings, stop_on_error=False
+    )
 
     assert len(results) == 3
     assert results[0] == "OK1"
@@ -129,7 +135,9 @@ async def test_run_multi_statement_continue_on_error(settings, patch_get_pool):
 async def test_run_multi_statement_empty_and_whitespace(settings, patch_get_pool):
     mock_pool, mock_conn = patch_get_pool
 
-    results = await run_multi_statement_sql_script("   ; ; -- only comments\n  ", settings)
+    results = await run_multi_statement_sql_script(
+        "   ; ; -- only comments\n  ", settings
+    )
     assert results == []
 
     results2 = await run_multi_statement_sql_script("", settings)
@@ -155,8 +163,8 @@ def test_public_api_exports():
     src/py_pgkit/db/__init__.py are fixed (bulk_insert and query_logs are imported
     from .db in package __init__ but not defined/exported in db/__init__.py).
 
-    This is best-practice API surface testing and prevents "it works if you import
-    the submodule directly" bugs.
+    This is the preferred approach for API surface testing and prevents "it works if
+    you import the submodule directly" bugs.
     """
     import py_pgkit as pgk
 
@@ -166,6 +174,7 @@ def test_public_api_exports():
 
     # Also test direct from db (should work after fix)
     from py_pgkit.db import bulk_insert, query_logs
+
     assert callable(bulk_insert)
     assert callable(query_logs)
 
@@ -189,7 +198,9 @@ async def test_run_multi_statement_malformed_comments_and_heuristic_edge_cases(
     SELECT id AS "has RETURNING in name" FROM t;
     INSERT INTO t (name) VALUES ('foo;bar');  -- ; inside string
     """
-    results = await run_multi_statement_sql_script(script, settings, stop_on_error=False)
+    results = await run_multi_statement_sql_script(
+        script, settings, stop_on_error=False
+    )
 
     # Should still produce results for the parsable parts; the unclosed comment
     # leaves garbage but the regex is non-greedy so it may leave the rest.

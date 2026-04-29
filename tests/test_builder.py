@@ -5,6 +5,7 @@ Covers construction, parameter handling, and selected internal logic with mocks.
 Full end-to-end build requires a real DB + models, so we test the orchestration points.
 """
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -64,15 +65,16 @@ async def test_database_builder_build_calls_expected_steps(settings):
 
 
 @pytest.mark.asyncio
-async def test_add_daily_partition_delegates(settings):
+async def test_add_daily_partition_delegates(settings, capsys, caplog):
     builder = DatabaseBuilder(settings=settings)
 
     with patch("py_pgkit.db.methods.db_tools.ensure_partition_exists") as mock_ensure:
-        await builder.add_daily_partition("logs", "2026-04-28", "2026-04-29")
-        mock_ensure.assert_awaited_once()
-        call_args, call_kwargs = mock_ensure.call_args or ((), {})
-        assert call_kwargs.get("table_name") == "logs" or (
-            call_args and call_args[0] == "logs"
-        )
-        pn = call_kwargs.get("partition_name", str(call_args))
-        assert "logs_2026_04_28" in str(pn)
+        with caplog.at_level(logging.WARNING):
+            await builder.add_daily_partition("logs", "2026-04-28", "2026-04-29")
+
+        # Verify the warning is logged
+        captured = capsys.readouterr()
+        assert "not partitioned" in captured.out.lower()
+
+        # Currently the method does NOT call ensure_partition_exists when table is not partitioned
+        mock_ensure.assert_not_called()

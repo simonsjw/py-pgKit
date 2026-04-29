@@ -2,10 +2,14 @@
 Tests for py_pgkit.db.methods.db_tools (ensure_functions_loaded, ensure_partition_exists)
 """
 
-import pytest
 from unittest.mock import patch
 
-from py_pgkit.db.methods.db_tools import ensure_functions_loaded, ensure_partition_exists
+import pytest
+
+from py_pgkit.db.methods.db_tools import (
+    ensure_functions_loaded,
+    ensure_partition_exists,
+)
 
 
 @pytest.mark.asyncio
@@ -18,6 +22,8 @@ async def test_ensure_functions_loaded_from_list(settings, patch_get_pool):
         "CREATE OR REPLACE FUNCTION world() RETURNS int AS $$ SELECT 42; $$ LANGUAGE sql;",
     ]
     await ensure_functions_loaded(funcs, settings)
+
+    print("DEBUG - execute calls:", mock_conn.execute.call_count)                         # remove later
     assert mock_conn.execute.call_count == 2
 
 
@@ -53,4 +59,6 @@ async def test_ensure_partition_exists_duplicate_ignored(settings, patch_get_poo
     mock_conn.execute.side_effect = DuplicateTableError("already exists")
 
     # Should not raise
-    await ensure_partition_exists("logs", "logs_2026_04_27", "2026-04-27", "2026-04-28", settings)
+    await ensure_partition_exists(
+        "logs", "logs_2026_04_27", "2026-04-27", "2026-04-28", settings
+    )
