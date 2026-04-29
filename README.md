@@ -138,6 +138,52 @@ app_logger = pgk.logging.getLogger("app", conn=app_settings)
 audit_logger = pgk.logging.getLogger("audit", conn=audit_settings)
 ```
 
+---
+
+## Testing
+
+All tests are unit tests with heavy mocking (no live PostgreSQL required).
+See [tests/README.md](tests/README.md) for full details, debugging tips, and how to add new tests.
+```
+
+### Why This Approach Works So Well
+
+The suite is deliberately **mock-centric** (using `patch_get_pool`, `AsyncMock` + proper async context managers, `side_effect` lists, and strict `call_args` assertions). This gives you:
+
+- **Zero external dependencies** for running tests (fast CI, works on any laptop).
+- **Precise verification** of generated SQL, chunking logic, error handling, and comment stripping without ever touching a real DB.
+- **Excellent isolation** via per-test event loops, autouse registry clearing, and the `settings` + `patch_get_pool` fixture combo.
+
+### Quick Reference (from the new README)
+
+**Running & investigating:**
+```bash
+pytest -q                          # normal run (asyncio already configured)
+pytest -v -s --tb=short            # verbose + see prints + concise tracebacks
+pytest -k "bulk_insert and error"  # keyword filtering
+pytest --pdb tests/test_query.py   # debugger on failure
+```
+
+**Key fixtures you’ll use in almost every new test:**
+- `settings` → minimal `PgSettings` (never connects)
+- `patch_get_pool` → the universal DB mock (patches `get_pool` in all modules)
+- `sample_records_dict` / `multipart_sql_script` → ready-made test data
+
+**Drafting a new test (copy-paste template):**
+```python
+@pytest.mark.asyncio
+async def test_your_new_feature(settings, patch_get_pool):
+    mock_pool, mock_conn = patch_get_pool
+    mock_conn.fetch.return_value = [{"id": 42}]
+
+    result = await your_function("arg", settings)
+
+    mock_conn.fetch.assert_awaited_once()
+    sql = mock_conn.fetch.call_args[0][0]
+    assert "SELECT" in sql and "WHERE" in sql
+    assert result == [{"id": 42}]
+```
+
 ## 📄 License
 
 MIT License — © 2026 Simon (simonsjw)
