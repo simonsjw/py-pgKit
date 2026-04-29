@@ -7,7 +7,7 @@ This document describes the test framework for **py-pgKit** (`py_pgkit`), locate
 - Investigate failures or unexpected behavior
 - Draft new tests following the established patterns
 
-**Key principle**: All tests are **unit tests that use heavy mocking**. No live PostgreSQL database is required (or used) during `pytest` runs. This keeps the suite fast, deterministic, portable, and suitable for CI environments without Docker or external services.
+**Principle**: All tests are **unit tests that use heavy mocking**. No live PostgreSQL database is required (or used) during `pytest` runs. This keeps the suite fast, deterministic, portable, and suitable for CI environments without Docker or external services.
 
 ## Quick Start
 
@@ -23,16 +23,16 @@ pytest -q
 
 ### Useful pytest Flags for Investigation
 
-| Flag                  | Purpose                                                                 | Example |
-|-----------------------|-------------------------------------------------------------------------|---------|
-| `-v`                  | Verbose output (shows test names + docstrings)                          | `pytest -v tests/test_query.py` |
-| `-s` / `--capture=no` | Show `print()` statements and captured stdout (great for DEBUG prints) | `pytest -s tests/test_load.py::test_bulk_insert_dicts_default_chunk` |
-| `--pdb`               | Drop into interactive debugger on first failure                         | `pytest --pdb tests/test_query.py` |
-| `-k "expression"`     | Run tests matching substring / keyword (e.g. "bulk" or "error")         | `pytest -k "bulk_insert and error"` |
-| `--lf` / `--last-failed` | Re-run only the tests that failed in the previous run                | `pytest --lf` |
-| `--tb=short` / `long` | Control traceback length (short is usually enough)                      | `pytest --tb=short -q` |
-| `-q --asyncio-mode=auto` | Explicitly force asyncio mode (already in config)                   | As shown in your command |
-| `--cov=src/py_pgkit --cov-report=term-missing` | Code coverage (requires `pytest-cov`) | `pip install pytest-cov && pytest --cov=...` |
+| Flag                                           | Purpose                                                                | Example                                                              |
+|------------------------------------------------|------------------------------------------------------------------------|----------------------------------------------------------------------|
+| `-v`                                           | Verbose output (shows test names + docstrings)                         | `pytest -v tests/test_query.py`                                      |
+| `-s` / `--capture=no`                          | Show `print()` statements and captured stdout (great for DEBUG prints) | `pytest -s tests/test_load.py::test_bulk_insert_dicts_default_chunk` |
+| `--pdb`                                        | Drop into interactive debugger on first failure                        | `pytest --pdb tests/test_query.py`                                   |
+| `-k "expression"`                              | Run tests matching substring / keyword (e.g. "bulk" or "error")        | `pytest -k "bulk_insert and error"`                                  |
+| `--lf` / `--last-failed`                       | Re-run only the tests that failed in the previous run                  | `pytest --lf`                                                        |
+| `--tb=short` / `long`                          | Control traceback length (short is usually enough)                     | `pytest --tb=short -q`                                               |
+| `-q --asyncio-mode=auto`                       | Explicitly force asyncio mode (already in config)                      | As shown in your command                                             |
+| `--cov=src/py_pgkit --cov-report=term-missing` | Code coverage (requires `pytest-cov`)                                  | `pip install pytest-cov && pytest --cov=...`                         |
 
 **Pro tip**: Add temporary `print("DEBUG:", mock_conn.execute.call_args)` inside a test (as already done in one place in `test_db_tools.py`) and run with `-s` to inspect exactly what SQL / arguments are being passed to the mock.
 
@@ -96,17 +96,17 @@ Resets the internal `_POOL_REGISTRY` dict before/after every pool test to guaran
 
 ## Test File Overview
 
-| File                    | Focus Area                                      | Key Techniques Used |
-|-------------------------|-------------------------------------------------|---------------------|
-| `test_settings.py`      | `PgSettings` Pydantic model (validation, env vars, frozen) | `monkeypatch.setenv`, `pytest.raises(ValidationError)` |
-| `test_pool.py`          | Connection pool caching, key generation, cleanup | `patch("...asyncpg.create_pool")`, autouse registry clearer, `assert p1 is p2` (caching) |
-| `test_logging.py`       | `getLogger`, `DBLogHandler`, `configure_logging` | `patch("...asyncio.get_event_loop")`, handler inspection, idempotency checks |
-| `test_load.py`          | `load_*_to_memory`, `bulk_insert` (chunking is the tricky part) | `patch_get_pool`, explicit `batch_size` tests, dict vs tuple handling, error propagation |
-| `test_query.py`         | `execute_query`, `run_multi_statement_sql_script` (comment stripping, SELECT heuristic, stop_on_error) | Complex `side_effect` lists for mixed fetch/execute, `stop_on_error=True/False` paths, malformed comment edge cases |
-| `test_db_tools.py`      | `ensure_functions_loaded`, `ensure_partition_exists` | DuplicateTableError swallowing, list vs string input |
-| `test_builder.py`       | `DatabaseBuilder` lifecycle and partition logic | `capsys` + `caplog` for logging assertions, flag-based step verification |
-| `test_imports.py`       | Package import structure & re-exports           | Layered import checks (internal → public API) |
-| `test_import_by_fn.py`  | Public API surface verification                 | `hasattr` + callable checks at every import level |
+| File                   | Focus Area                                                                                             | Key Techniques Used                                                                                                 |
+|------------------------|--------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------|
+| `test_settings.py`     | `PgSettings` Pydantic model (validation, env vars, frozen)                                             | `monkeypatch.setenv`, `pytest.raises(ValidationError)`                                                              |
+| `test_pool.py`         | Connection pool caching, key generation, cleanup                                                       | `patch("...asyncpg.create_pool")`, autouse registry clearer, `assert p1 is p2` (caching)                            |
+| `test_logging.py`      | `getLogger`, `DBLogHandler`, `configure_logging`                                                       | `patch("...asyncio.get_event_loop")`, handler inspection, idempotency checks                                        |
+| `test_load.py`         | `load_*_to_memory`, `bulk_insert` (chunking is the tricky part)                                        | `patch_get_pool`, explicit `batch_size` tests, dict vs tuple handling, error propagation                            |
+| `test_query.py`        | `execute_query`, `run_multi_statement_sql_script` (comment stripping, SELECT heuristic, stop_on_error) | Complex `side_effect` lists for mixed fetch/execute, `stop_on_error=True/False` paths, malformed comment edge cases |
+| `test_db_tools.py`     | `ensure_functions_loaded`, `ensure_partition_exists`                                                   | DuplicateTableError swallowing, list vs string input                                                                |
+| `test_builder.py`      | `DatabaseBuilder` lifecycle and partition logic                                                        | `capsys` + `caplog` for logging assertions, flag-based step verification                                            |
+| `test_imports.py`      | Package import structure & re-exports                                                                  | Layered import checks (internal → public API)                                                                       |
+| `test_import_by_fn.py` | Public API surface verification                                                                        | `hasattr` + callable checks at every import level                                                                   |
 
 ## How Database Writes & Side-Effects Are Managed (No Real DB!)
 
@@ -215,6 +215,6 @@ The test suite is deliberately **mock-heavy and isolation-focused**. This design
 - Confidently refactor internal DB code without fear of breaking production data
 - Quickly understand exactly what SQL is being generated by inspecting `call_args`
 
-By following the patterns above (especially `patch_get_pool` + strict mock assertions), you can confidently add new functionality and tests that will keep the suite maintainable as the library grows.
+By following the patterns above (especially `patch_get_pool` + strict mock assertions), you can add new functionality and tests that will keep the suite maintainable.
 
 Happy testing! If you find a tricky edge case that the current mocks don't cover well, feel free to improve the fixtures in `conftest.py` — that's exactly how the suite evolved.
