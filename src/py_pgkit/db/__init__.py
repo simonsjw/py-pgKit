@@ -6,8 +6,7 @@ Database layer for py-pgkit.
 
 This package re-exports the core component:
 
-- `PgSettings` — modern Pydantic settings
-- `get_pool` / `PgPoolManager` — shared asyncpg connection pools
+- `get_pool`   — shared asyncpg connection pools
 - `DatabaseBuilder` — full incremental infrastructure builder
 
 

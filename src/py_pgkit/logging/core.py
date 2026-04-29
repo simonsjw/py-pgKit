@@ -73,7 +73,6 @@ import json
 import logging
 import logging.handlers
 from datetime import datetime, timezone
-from typing import Any
 
 # Re-export everything from stdlib logging so users can do
 # ``from py_pgkit.logging import getLogger, DEBUG, INFO, ...``
@@ -93,10 +92,11 @@ from logging import (
     basicConfig,
 )
 from logging import getLogger as _stdlib_getLogger
+from typing import Any
 
 import asyncpg
 
-from py_pgkit.db import DatabaseBuilder, PgSettings, get_pool
+from py_pgkit.db import PgSettings, get_pool
 
 
 class DBLogHandler(logging.Handler):
@@ -202,7 +202,7 @@ class DBLogHandler(logging.Handler):
         """
         super().__init__(level)
         self.settings = settings
-        self._pool: asyncpg.Pool | None = None  # retained for API compatibility
+        self._pool: asyncpg.Pool | None = None                                            # retained for API compatibility
         self._table_created: bool = False
         self._pending: set[asyncio.Task[None]] = set()
 
@@ -470,7 +470,7 @@ async def flush_all_handlers() -> None:
     DBLogHandler.aflush : Per-handler async flush method.
     py_pgkit.db.close_all_pools : Often called immediately after this helper.
     """
-    std_logging = logging  # local alias to avoid shadowing
+    std_logging = logging                                                                 # local alias to avoid shadowing
 
     handlers: set[DBLogHandler] = set()
 
@@ -573,7 +573,7 @@ def getLogger(
 
     if isinstance(name, PgSettings):
         settings = name
-        name = None  # use root / default name
+        name = None                                                                       # use root / default name
     elif conn is not None:
         settings = conn
 
