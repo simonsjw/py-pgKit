@@ -245,7 +245,7 @@ class PgSettings(BaseSettings):
         -------
         bool
             True if connection succeeds, False otherwise (never raises
-            for ping — use try/except if you want the exception).
+            for ping — could use try/except to get the exception).
 
         Examples
         --------

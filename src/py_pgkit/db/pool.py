@@ -82,7 +82,7 @@ async def get_pool(settings: PgSettings) -> asyncpg.Pool:
     Notes
     -----
     Pools are cached for the lifetime of the process. Call
-    `await close_all_pools()` at shutdown if you need explicit cleanup.
+    `await close_all_pools()` at shutdown for an explicit cleanup.
 
     Examples
     --------
@@ -124,8 +124,9 @@ async def close_all_pools() -> None:
 
     This is useful at application shutdown to ensure all connections
     are returned to the server cleanly. It is called automatically
-    via `atexit` in most environments, but you may call it explicitly
-    in long-running services or tests.
+    via `atexit` in most environments.
+
+    Call it explicitly in long-running services or tests.
     """
     async with _POOL_LOCK:
         for pool in list(_POOL_REGISTRY.values()):
