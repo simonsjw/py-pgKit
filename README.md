@@ -15,6 +15,7 @@
 - **Query Execution** — Safe single queries, multi-statement scripts, and `query_logs` (structured log retrieval)
 - **Database Maintenance** — `ensure_functions_loaded` and `ensure_partition_exists`
 - **Structured DB Logging** — Drop-in replacement for `logging` with automatic PostgreSQL storage (JSONB `obj` column)
+- **Graceful Async Shutdown** — `flush_all_handlers()` ensures all asynchronous structured log messages are persisted before closing the connection pool with `close_all_pools()`
 - **Zero Boilerplate** — One `configure_logging()` call and you're done
 
 ---
@@ -64,6 +65,10 @@ async def main():
 
     print("✅ py-pgkit setup complete!")
 
+    # === 6. Graceful shutdown (NEW — recommended when using DB logging) ===
+    await pgk.flush_all_handlers()   # ensure all structured logs are persisted
+    await pgk.close_all_pools()
+
 asyncio.run(main())
 ```
 
@@ -93,6 +98,7 @@ pip install -e ".[dev]"
 |-------------------------------|-----------|
 | `PgSettings`                  | Modern Pydantic settings (env vars, validation, dict-like access) |
 | `get_pool(settings)`          | Get (or create) a cached asyncpg connection pool |
+| `close_all_pools()`           | Gracefully close **all** cached asyncpg pools (call `flush_all_handlers()` first when DB logging is active) |
 | `DatabaseBuilder`             | Full incremental database setup |
 | `load_table_to_memory`        | Load table (or filtered subset) into list of dicts |
 | `load_query_to_memory`        | Execute any SELECT and return results |
@@ -114,6 +120,8 @@ logger = logging.getLogger(__name__)           # stdlib by default
 logger = logging.getLogger(settings)           # DB-backed
 logger.info("Event", extra={"obj": {"user_id": 42}})
 ```
+
+**New in this release**: `flush_all_handlers()` — async module-level helper that walks the entire logging hierarchy and awaits completion of every pending DB insert. Use it before `close_all_pools()` to guarantee zero message loss.
 
 ---
 
@@ -138,13 +146,53 @@ app_logger = pgk.logging.getLogger("app", conn=app_settings)
 audit_logger = pgk.logging.getLogger("audit", conn=audit_settings)
 ```
 
+### Graceful Shutdown (Structured Logging + Pools)
+
+When using the PostgreSQL-backed logger, log records are inserted asynchronously (fire-and-forget) to keep your application responsive.  
+
+**Always flush before closing pools** to avoid losing the final log messages:
+
+```python
+import asyncio
+import py_pgkit as pgk
+from py_pgkit.db import close_all_pools
+
+async def main():
+    settings = PgSettings(...)          # or via configure_logging
+    pgk.configure_logging(settings)
+
+    logger = pgk.logging.getLogger(__name__)
+    logger.info("Starting up", extra={"obj": {"pid": os.getpid()}})
+
+    # ... application logic ...
+
+    logger.info("Shutting down cleanly", extra={"obj": {"status": "ok"}})
+
+    await pgk.flush_all_handlers()      # ← NEW: guarantees all DB logs are written
+    await close_all_pools()             # now safe to close
+
+asyncio.run(main())
+```
+
+**In pytest-asyncio fixtures** (recommended pattern):
+
+```python
+@pytest.fixture(scope="function")
+async def app_logger(settings):
+    pgk.configure_logging(settings)
+    logger = pgk.logging.getLogger("test-app")
+    yield logger
+    await pgk.flush_all_handlers()      # flush before pool teardown
+```
+
+The `DBLogHandler` automatically tracks every pending insert task. `flush_all_handlers()` discovers **all** attached handlers (even on child loggers) and awaits them concurrently with `asyncio.gather(..., return_exceptions=True)`.
+
 ---
 
 ## Testing
 
 All tests are unit tests with heavy mocking (no live PostgreSQL required).
 See [tests/README.md](tests/README.md) for full details, debugging tips, and how to add new tests.
-```
 
 ### Why This Approach Works So Well
 
@@ -187,5 +235,3 @@ async def test_your_new_feature(settings, patch_get_pool):
 ## 📄 License
 
 MIT License — © 2026 Simon (simonsjw)
-
-
