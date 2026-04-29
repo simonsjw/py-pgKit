@@ -23,6 +23,12 @@ When a `PgSettings` (or connection object) is passed to `getLogger`,
 a `DBLogHandler` is attached that writes to the `logs` table using
 the shared pool from `py_pgkit.db`. All other behaviour is identical
 to the standard library.
+
+New in this version
+-------------------
+A module-level helper :func:`flush_all_handlers` is provided for
+graceful shutdown and deterministic test teardown.  See its
+documentation for usage patterns.
 """
 
 from .core import (
@@ -40,11 +46,13 @@ from .core import (
     StreamHandler,
     basicConfig,
     getLogger,
+    flush_all_handlers,   # NEW — await this to guarantee all DB logs are persisted
 )
 
 __all__ = [
     "getLogger",
     "DBLogHandler",
+    "flush_all_handlers",
     "DEBUG",
     "INFO",
     "WARNING",

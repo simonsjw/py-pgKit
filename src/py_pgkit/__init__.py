@@ -20,7 +20,7 @@ Quick start
 -----------
 ```python
 import py_pgkit as pgk
-from py_pgkit.db.settings import PgSettings
+from py_pgkit.db import PgSettings
 
 settings = PgSettings(
     host="localhost",
@@ -46,8 +46,15 @@ Import style
 `import py_pgkit as pgk` (as requested).
 
 You may also do:
-- `from py_pgkit.db.settings import PgSettings, get_pool, DatabaseBuilder`
+- `from py_pgkit.db import PgSettings, get_pool, DatabaseBuilder`
 - `from py_pgkit import logging as logging` (recommended over bare `import logging`)
+
+New convenience helper
+----------------------
+```python
+await pgk.flush_all_handlers()   # ensure every structured log is persisted
+await pgk.close_all_pools()
+```
 """
 
 from __future__ import annotations
@@ -68,8 +75,8 @@ from .db import (
     query_logs,
     run_multi_statement_sql_script,
 )
-
-# for convenience
+from .logging import getLogger as logging_getLogger                                       # for convenience
+from .logging.core import flush_all_handlers                                               # top-level convenience
 
 __all__ = [
     "PgSettings",
@@ -86,6 +93,7 @@ __all__ = [
     "ensure_partition_exists",
     "logging",
     "logging_getLogger",
+    "flush_all_handlers",   # NEW — await to guarantee DB log persistence before shutdown
 ]
 
 
@@ -103,9 +111,6 @@ def configure_logging(
     This is the recommended way to set up logging for an entire
     application or library ecosystem.
     """
-    # Lazy import to address circular imports.
-    from .logging import getLogger as logging_getLogger
-
     if default_settings is not None:
         # Prime the pool and attach a root DB handler
         root_logger = logging_getLogger(None, conn=default_settings, level=level)
