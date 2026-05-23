@@ -350,3 +350,72 @@ class DatabaseBuilder:
             settings=self.settings,
         )
         logger.info("Ensured partition %s", partition_name)
+
+    async def with_partition_support(
+        self,
+        partition_backend: str = "pg_partman",
+        auto_ensure_partitions: bool = True,
+        partitioned_tables: Optional[list[str]] = None,
+    ) -> "DatabaseBuilder":
+        """
+        Enable automatic partition management during database setup.
+
+        When `partition_backend="pg_partman"` and the extension is installed,
+        `pg_partman` will be used for fully automatic partition creation and
+        maintenance. Otherwise the native `ensure_partition_exists` path is used.
+
+        Parameters
+        ----------
+        partition_backend : {'pg_partman', 'native'}, default "pg_partman"
+            Partition management backend to use.
+        auto_ensure_partitions : bool, default True
+            Whether to automatically ensure partitions exist for the listed tables.
+        partitioned_tables : list of str, optional
+            List of fully qualified table names that require partitioning.
+            Defaults to `["responses"]`.
+
+        Returns
+        -------
+        DatabaseBuilder
+            The current builder instance (for method chaining).
+        """
+        if partitioned_tables is None:
+            partitioned_tables = ["responses"]
+
+        if partition_backend == "pg_partman":
+            partman = PartmanManager(self.pool, self.logger)
+            if await partman.is_installed():
+                for table in partitioned_tables:
+                    await partman.create_parent(table)
+                    if auto_ensure_partitions:
+                        await partman.ensure_partitions(table)
+            else:
+                self.logger.warning(
+                    "pg_partman requested but not installed. "
+                    "Falling back to native partitioning."
+                )
+                # --- Native fallback using existing py_pgkit function ---
+                from py_pgkit.db import ensure_partition_exists
+
+                for table in partitioned_tables:
+                    await ensure_partition_exists(
+                        pool=self.pool,
+                        table=table,
+                        partition_key="tstamp",
+                        strategy="daily",
+                        days_ahead=7,
+                    )
+        else:
+            # Pure native path (when user explicitly chooses "native")
+            from py_pgkit.db import ensure_partition_exists
+
+            for table in partitioned_tables:
+                await ensure_partition_exists(
+                    pool=self.pool,
+                    table=table,
+                    partition_key="tstamp",
+                    strategy="daily",
+                    days_ahead=7,
+                )
+
+        return self

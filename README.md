@@ -105,7 +105,7 @@ pip install -e ".[dev]"
 | `bulk_insert`                 | High-performance bulk loading via COPY (thousands–millions of rows) |
 | `execute_query`               | Safe query execution with optional result fetching |
 | `run_multi_statement_sql_script` | Run `.sql` migration/setup scripts |
-| `query_logs`                  | Convenient filtered querying of the structured `logs` table |
+| `query_logs`                  | Convenient filtered querying of the structured `logs` table (`level`, `logger_name`, `start_time`/`end_time`, `limit`, `order_by`) |
 | `ensure_functions_loaded`     | Load custom SQL functions from directory/file/list |
 | `ensure_partition_exists`     | Create range partitions on demand |
 
@@ -148,7 +148,7 @@ audit_logger = pgk.logging.getLogger("audit", conn=audit_settings)
 
 ### Graceful Shutdown (Structured Logging + Pools)
 
-When using the PostgreSQL-backed logger, log records are inserted asynchronously (fire-and-forget) to keep your application responsive.  
+When using the PostgreSQL-backed logger, log records are inserted asynchronously (fire-and-forget) to keep your application responsive.
 
 **Always flush before closing pools** to avoid losing the final log messages:
 
@@ -186,6 +186,30 @@ async def app_logger(settings):
 ```
 
 The `DBLogHandler` automatically tracks every pending insert task. `flush_all_handlers()` discovers **all** attached handlers (even on child loggers) and awaits them concurrently with `asyncio.gather(..., return_exceptions=True)`.
+
+### Querying the logs table
+
+```python
+import py_pgkit as pgk
+from py_pgkit.db import PgSettings
+from datetime import datetime, timedelta
+
+settings = PgSettings(...)
+pgk.configure_logging(settings)
+
+# Recent errors from a specific logger (uses correct parameters: logger_name, start_time/end_time)
+errors = await pgk.query_logs(
+    settings,
+    level="ERROR",
+    logger_name="ai_api.core",
+    start_time=(datetime.utcnow() - timedelta(days=1)).isoformat(),
+    limit=50,
+    order_by="tstamp DESC",
+)
+
+for log in errors:
+    print(log["tstamp"], log["loglvl"], log["message"], log.get("obj"))
+```
 
 ---
 
