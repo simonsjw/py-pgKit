@@ -71,7 +71,7 @@ async def ensure_functions_loaded(
             try:
                 await conn.execute(sql)
             except Exception as exc:
-                print(f"[py_pgkit] Warning loading function: {exc}")
+                raise RuntimeError(f"[py_pgkit] Failed to load SQL: {exc}") from exc
 
 
 async def ensure_partition_exists(

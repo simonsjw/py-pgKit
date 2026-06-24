@@ -139,7 +139,7 @@ class PartmanManager:
         self.logger = logger or logging.getLogger(__name__)
         self.default_premake = default_premake
         self.default_buffer_days = default_buffer_days
-        self.covered: Optional[CoveredRange] = None
+        self.covered: CoveredRange | None = None
 
     async def is_installed(self) -> bool:
         """
@@ -165,7 +165,7 @@ class PartmanManager:
         control_column: str = "tstamp",
         interval: str = "1 day",
         premake: int = 7,
-        start_partition: Optional[str] = None,
+        start_partition: str | None = None,
     ) -> bool:
         """
         Register a parent table with pg_partman.
@@ -231,34 +231,45 @@ class PartmanManager:
         parent_table: str = "public.responses",
         control_column: str = "tstamp",
         interval: str = "1 day",
-        premake: Optional[int] = None,
-        start_partition: Optional[date] = None,
+        premake: int | None = None,
+        start_partition: date | None = None,
     ) -> bool:
         """
         One-time initialization of pg_partman for a partitioned table.
 
-        This is the recommended entry point. It registers the table (if needed),
-        runs maintenance to create initial partitions, and populates the
-        in-memory ``covered`` range.
+        This is the recommended entry point. It registers the table with
+        pg_partman (if not already registered), runs maintenance to create
+        the initial set of partitions, and populates the in-memory
+        ``covered`` range used by the fast-path in
+        :meth:`ensure_partition_for_date`.
 
         Parameters
         ----------
         parent_table : str, default "public.responses"
-            Fully qualified parent table name.
+            Fully qualified name of the parent partitioned table.
         control_column : str, default "tstamp"
-            Partition key column.
+            Name of the timestamptz (or date) column used as the partition key.
         interval : str, default "1 day"
-            Partition interval.
+            Partition interval understood by pg_partman (e.g. ``'1 day'``,
+            ``'1 month'``, ``'1 week'``).
         premake : int, optional
-            Number of future partitions to create. Defaults to
-            ``self.default_premake``.
+            Number of future partitions to pre-create. If None, falls back to
+            ``self.default_premake`` (default 14).
         start_partition : datetime.date, optional
-            Earliest date to cover. Defaults to yesterday.
+            Earliest date for which a partition should exist. Defaults to
+            yesterday so that “today” is always covered after initialization.
 
         Returns
         -------
         bool
-            True if initialization succeeded.
+            True if registration and initial partition creation succeeded,
+            False otherwise (e.g. pg_partman not installed).
+
+        Notes
+        -----
+        This method is idempotent in the sense that calling it multiple times
+        on an already-registered table is safe. It is intended to be called
+        once at application startup.
         """
         if start_partition is None:
             start_partition = date.today() - timedelta(days=1)
@@ -294,7 +305,7 @@ class PartmanManager:
 
     async def ensure_partition_for_date(
         self,
-        target_date: Optional[date] = None,
+        target_date: date | None = None,
         parent_table: str = "public.responses",
     ) -> bool:
         """
@@ -320,7 +331,7 @@ class PartmanManager:
             target_date = date.today()
 
         if self.covered and self.covered.contains(target_date):
-            return True
+            return True                                                                   # fast path — zero database round-trips for the common case
 
         self.logger.debug(
             "Date %s outside covered range %s — extending partitions",

@@ -51,6 +51,7 @@ import networkx as nx
 from sqlalchemy import MetaData, Table, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from ..partitioning.partman import PartmanManager
 from .methods.db_tools import ensure_functions_loaded, ensure_partition_exists
 from .pool import get_pool
 from .settings import PgSettings
@@ -141,6 +142,32 @@ class DatabaseBuilder:
             self._pool = await get_pool(self.settings)
         return self._pool
 
+    async def _get_admin_pool(self, admin_user: str = "postgres") -> asyncpg.Pool:
+        """Lazily obtain a connection to the administrator user.
+        (defaults to "postgres")."""
+        admin_pool: async.Pool = await get_pool(
+            PgSettings(
+                host=self.settings.host,
+                port=self.settings.port,
+                database=admin_user,
+                user=self.settings.user,
+                password=self.settings.password,
+            )
+        )
+
+        return admin_pool
+
+    async def _get_engine(self) -> AsyncEngine:
+        """Lazily create SQLAlchemy async engine."""
+        if self.engine is None:
+            url = (
+                f"postgresql+asyncpg://{self.settings.user}:"
+                f"{self.settings.password or ''}@{self.settings.host}:"
+                f"{self.settings.port}/{self.settings.database}"
+            )
+            self.engine = create_async_engine(url, echo=self.settings.echo)
+        return self.engine
+
     async def build(self) -> None:
         """
         Execute the full incremental build process.
@@ -185,10 +212,12 @@ class DatabaseBuilder:
     # Internal implementation methods (each is independently useful)
     # ------------------------------------------------------------------
 
-    async def _ensure_tablespace(self, pool: asyncpg.Pool) -> None:
+    async def _ensure_tablespace(self) -> None:
         """Create tablespace if it does not exist."""
         ts_name = self.settings.tablespace_name
         ts_path = self.settings.tablespace_path
+
+        pool: asyncpg.Pool = await self._get_pool()
 
         if not ts_name:
             return
@@ -210,20 +239,12 @@ class DatabaseBuilder:
             await conn.execute(f"CREATE TABLESPACE {ts_name} LOCATION '{ts_path}'")
             logger.info("Created tablespace %s at %s", ts_name, ts_path)
 
-    async def _ensure_database(self, pool: asyncpg.Pool) -> None:
+    async def _ensure_database(self) -> None:
         """Create the target database if it does not exist."""
         db_name = self.settings.database
 
         # We must connect to 'postgres' or 'template1' to create DBs
-        admin_pool = await get_pool(
-            PgSettings(
-                host=self.settings.host,
-                port=self.settings.port,
-                database="postgres",
-                user=self.settings.user,
-                password=self.settings.password,
-            )
-        )
+        admin_pool = await self._get_admin_pool()
 
         async with admin_pool.acquire() as conn:
             exists = await conn.fetchval(
@@ -241,8 +262,11 @@ class DatabaseBuilder:
             await conn.execute(f'CREATE DATABASE "{db_name}"{ts_clause}')
             logger.info("Created database %s", db_name)
 
-    async def _ensure_extensions(self, pool: asyncpg.Pool) -> None:
+    async def _ensure_extensions(self) -> None:
         """Create listed extensions if they do not exist."""
+
+        pool: asyncpg.Pool = await self._get_pool()
+
         async with pool.acquire() as conn:
             for ext in self.settings.extensions or []:
                 exists = await conn.fetchval(
@@ -294,18 +318,7 @@ class DatabaseBuilder:
                 await conn.run_sync(table.create, checkfirst=True)
                 logger.debug("Ensured table %s", name)
 
-    async def _get_engine(self) -> AsyncEngine:
-        """Lazily create SQLAlchemy async engine."""
-        if self.engine is None:
-            url = (
-                f"postgresql+asyncpg://{self.settings.user}:"
-                f"{self.settings.password or ''}@{self.settings.host}:"
-                f"{self.settings.port}/{self.settings.database}"
-            )
-            self.engine = create_async_engine(url, echo=self.settings.echo)
-        return self.engine
-
-    async def _ensure_triggers_and_functions(self, pool: asyncpg.Pool) -> None:
+    async def _ensure_triggers_and_functions(self) -> None:
         """
         Load custom SQL functions and triggers using the shared helper.
 
@@ -318,7 +331,7 @@ class DatabaseBuilder:
             await ensure_functions_loaded(functions, self.settings)
             logger.info("Custom functions loaded")
 
-    async def _setup_daily_partitioning(self, pool: asyncpg.Pool) -> None:
+    async def _setup_daily_partitioning(self) -> None:
         """
         Set up daily range partitioning using the shared helper.
 
@@ -355,7 +368,7 @@ class DatabaseBuilder:
         self,
         partition_backend: str = "pg_partman",
         auto_ensure_partitions: bool = True,
-        partitioned_tables: Optional[list[str]] = None,
+        partitioned_tables: list[str] | None = None,
     ) -> "DatabaseBuilder":
         """
         Enable automatic partition management during database setup.
@@ -379,11 +392,14 @@ class DatabaseBuilder:
         DatabaseBuilder
             The current builder instance (for method chaining).
         """
+
+        pool = await self._get_pool()
+
         if partitioned_tables is None:
             partitioned_tables = ["responses"]
 
         if partition_backend == "pg_partman":
-            partman = PartmanManager(self.pool, self.logger)
+            partman = PartmanManager(pool, self.logger)                                   # uses in-memory CoveredRange fast path
             if await partman.is_installed():
                 for table in partitioned_tables:
                     await partman.create_parent(table)
@@ -399,7 +415,7 @@ class DatabaseBuilder:
 
                 for table in partitioned_tables:
                     await ensure_partition_exists(
-                        pool=self.pool,
+                        pool=pool,
                         table=table,
                         partition_key="tstamp",
                         strategy="daily",
@@ -411,7 +427,7 @@ class DatabaseBuilder:
 
             for table in partitioned_tables:
                 await ensure_partition_exists(
-                    pool=self.pool,
+                    pool=pool,
                     table=table,
                     partition_key="tstamp",
                     strategy="daily",
