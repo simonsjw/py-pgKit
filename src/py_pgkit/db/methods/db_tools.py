@@ -113,6 +113,13 @@ async def ensure_partition_exists(
     """
     pool = await get_pool(settings)
 
+    warnings.warn(
+        "ensure_partition_exists() is deprecated. "
+        "Use PartmanManager from py_pgkit.partitioning.partman instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
     create_stmt = f"""
         CREATE TABLE IF NOT EXISTS {partition_name}
         PARTITION OF {table_name}
