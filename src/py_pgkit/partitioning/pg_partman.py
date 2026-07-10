@@ -141,6 +141,13 @@ class PartmanManager:
         target_date: date | None = None,
         parent_table: str = "public.responses",
     ) -> bool:
+        """
+        Ensure the daily partition exists for a given table. If none is provided,
+        assume it is the public.responses table.
+
+        If no date is provided, defaults to today (the most common case
+        when inserting new LLM turns).
+        """
         if target_date is None:
             target_date = date.today()
 
