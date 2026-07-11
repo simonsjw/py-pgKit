@@ -1,5 +1,5 @@
 """
-py_pgkit.partitioning.partman
+py_pgkit.partitioning.pg_partman
 =============================
 
 High-level async manager for the pg_partman PostgreSQL extension.

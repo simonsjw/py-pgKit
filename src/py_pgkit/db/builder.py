@@ -30,7 +30,7 @@ from sqlalchemy import Table
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 # New recommended import path
-from ..partitioning.partman import PartmanManager
+from ..partitioning.pg_partman import PartmanManager
 from .methods.db_tools import ensure_functions_loaded
 from .pool import get_pool
 from .settings import PgSettings
