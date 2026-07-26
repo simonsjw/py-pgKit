@@ -60,6 +60,7 @@ class DatabaseBuilder:
     def __init__(
         self,
         settings: PgSettings,
+        admin_settings: PgSettings,
         models: list[Type[Any]] | None = None,
         create_tablespace: bool = True,
         create_database: bool = True,
@@ -70,6 +71,7 @@ class DatabaseBuilder:
         functions: list[str] | str | Path | list[Path] | None = None,
     ) -> None:
         self.settings = settings
+        self.admin_settings = admin_settings
         self.models = models or []
         self.create_tablespace = create_tablespace
         self.create_database = create_database
@@ -86,16 +88,49 @@ class DatabaseBuilder:
             self._pool = await get_pool(self.settings)
         return self._pool
 
+    async def _get_admin_pool(self) -> asyncpg.Pool:
+        """
+        Return a connection pool attached to the maintenance database.
+
+        Tablespaces and databases can only be created from a connection
+        that is not already inside the target database. The caller is
+        expected to supply a suitable ``admin_settings`` (normally pointing
+        at the ``postgres`` database).
+
+        Returns
+        -------
+        asyncpg.Pool
+            A pool connected to the maintenance database defined by
+            ``self.admin_settings``.
+        """
+        return await get_pool(self.admin_settings)
+
     async def build(self) -> None:
+        """
+        Run the full incremental build sequence.
+
+        Order of operations is deliberately:
+
+        1. Create tablespace (if requested) – uses admin connection
+        2. Create database (if requested) – uses admin connection
+        3. Connect to the now-existing target database
+        4. Create extensions, tables, triggers/functions
+        """
         logger.info("Starting DatabaseBuilder for %s", self.settings.database)
 
-        pool = await self._get_pool()
-
+        # ------------------------------------------------------------------
+        # Phase 1 – infrastructure that must be created from an admin connection
+        # ------------------------------------------------------------------
         if self.create_tablespace and self.settings.tablespace_name:
-            await self._ensure_tablespace(pool)
+            await self._ensure_tablespace()
 
         if self.create_database:
             await self._ensure_database()
+
+        # ------------------------------------------------------------------
+        # Phase 2 – now safe to connect to the target database
+        # ------------------------------------------------------------------
+        pool = await self._get_pool()
 
         if self.create_extensions and self.settings.extensions:
             await self._ensure_extensions(pool)
@@ -129,16 +164,21 @@ class DatabaseBuilder:
         return self.engine
 
     async def _ensure_tablespace(self) -> None:
-        """Create tablespace if it does not exist."""
+        """
+        Create the tablespace if it does not already exist.
+
+        Uses the admin connection because CREATE TABLESPACE cannot be
+        issued from inside the target database.
+        """
         ts_name = self.settings.tablespace_name
         ts_path = self.settings.tablespace_path
-
-        pool: asyncpg.Pool = await self._get_pool()
 
         if not ts_name:
             return
 
-        async with pool.acquire() as conn:
+        admin_pool = await self._get_admin_pool()
+
+        async with admin_pool.acquire() as conn:
             exists = await conn.fetchval(
                 "SELECT 1 FROM pg_tablespace WHERE spcname = $1", ts_name
             )
@@ -156,10 +196,14 @@ class DatabaseBuilder:
             logger.info("Created tablespace %s at %s", ts_name, ts_path)
 
     async def _ensure_database(self) -> None:
-        """Create the target database if it does not exist."""
+        """
+        Create the target database if it does not already exist.
+
+        Uses an admin connection. If a tablespace was requested it is
+        attached at creation time.
+        """
         db_name = self.settings.database
 
-        # We must connect to 'postgres' or 'template1' to create DBs
         admin_pool = await self._get_admin_pool()
 
         async with admin_pool.acquire() as conn:
@@ -170,10 +214,9 @@ class DatabaseBuilder:
                 logger.debug("Database %s already exists", db_name)
                 return
 
-            # Create with correct tablespace if specified
             ts_clause = ""
             if self.settings.tablespace_name:
-                ts_clause = f" TABLESPACE {self.settings.tablespace_name}"
+                ts_clause: str = f" TABLESPACE {self.settings.tablespace_name}"
 
             await conn.execute(f'CREATE DATABASE "{db_name}"{ts_clause}')
             logger.info("Created database %s", db_name)
