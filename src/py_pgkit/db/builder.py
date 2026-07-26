@@ -46,6 +46,9 @@ class DatabaseBuilder:
     ----------
     settings : PgSettings
         Connection and infrastructure settings.
+    admin_db : str
+        The name of the administration database used prior to the new
+        database being created.
     models : list[Type[DeclarativeBase]] | None, optional
         SQLAlchemy declarative models whose tables should be created.
     create_tablespace, create_database, create_extensions, create_tables,
@@ -60,7 +63,7 @@ class DatabaseBuilder:
     def __init__(
         self,
         settings: PgSettings,
-        admin_settings: PgSettings,
+        admin_db: str = "postgres",
         models: list[Type[Any]] | None = None,
         create_tablespace: bool = True,
         create_database: bool = True,
@@ -71,7 +74,10 @@ class DatabaseBuilder:
         functions: list[str] | str | Path | list[Path] | None = None,
     ) -> None:
         self.settings = settings
-        self.admin_settings = admin_settings
+        # derive admin settings - same user, just admin db. Almost always postgres.
+        self.admin_settings = admin_settings or settings.model_copy(
+            update={"database": admin_db}
+        )
         self.models = models or []
         self.create_tablespace = create_tablespace
         self.create_database = create_database
@@ -93,15 +99,13 @@ class DatabaseBuilder:
         Return a connection pool attached to the maintenance database.
 
         Tablespaces and databases can only be created from a connection
-        that is not already inside the target database. The caller is
-        expected to supply a suitable ``admin_settings`` (normally pointing
-        at the ``postgres`` database).
+        that is not already inside the target database.
 
         Returns
         -------
         asyncpg.Pool
-            A pool connected to the maintenance database defined by
-            ``self.admin_settings``.
+            A pool connected to the database defined by ``self.admin_settings``
+            (normally ``postgres``).
         """
         return await get_pool(self.admin_settings)
 
@@ -111,8 +115,8 @@ class DatabaseBuilder:
 
         Order of operations is deliberately:
 
-        1. Create tablespace (if requested) – uses admin connection
-        2. Create database (if requested) – uses admin connection
+        1. Create tablespace (if requested) – uses admin database/connection
+        2. Create database (if requested) – uses admin database/connection
         3. Connect to the now-existing target database
         4. Create extensions, tables, triggers/functions
         """
