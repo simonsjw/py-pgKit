@@ -225,8 +225,21 @@ class DatabaseBuilder:
                 )
                 if exists:
                     continue
-                await conn.execute(f'CREATE EXTENSION IF NOT EXISTS "{ext}"')
-                logger.info("Created extension %s", ext)
+
+                try:
+                    if ext == "pg_partman":
+                        # Explicit schema is the most reliable way to install it
+                        await conn.execute("CREATE SCHEMA IF NOT EXISTS partman")
+                        await conn.execute(
+                            'CREATE EXTENSION IF NOT EXISTS "pg_partman" SCHEMA partman'
+                        )
+                    else:
+                        await conn.execute(f'CREATE EXTENSION IF NOT EXISTS "{ext}"')
+                    logger.info("Created extension %s", ext)
+                except Exception as exc:
+                    logger.error("Failed to create extension %s: %s", ext, exc)
+                    # Optionally re-raise if you want the bootstrap to stop hard
+                    raise
 
     async def _ensure_tables(self) -> None:
         """

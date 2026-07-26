@@ -24,46 +24,63 @@ from py_pgkit.db.settings import PgSettings
 
 
 async def ensure_functions_loaded(
-    functions: list[str] | str | Path,
+    functions: list[str | Path] | str | Path,
     pool: asyncpg.Pool,
 ) -> None:
     """
     Ensure custom SQL functions are loaded into the database.
 
     Accepts either:
-    - A directory path containing `.sql` files
-    - A list of SQL function definitions as strings
-    - A single `.sql` file path
+    - A directory path containing ``*.sql`` files
+    - A single ``.sql`` file path
+    - A list of directory/file paths **or** raw SQL strings
+    - A single raw SQL string
 
     Parameters
     ----------
-    functions : list[str] | str | Path
+    functions : list[str | Path] | str | Path
         Source of the SQL functions.
-    pool : asyncpg.pool
+    pool : asyncpg.Pool
         A postgres connection pool to the database.
-
-    Examples
-    --------
-    >>> await ensure_functions_loaded("/path/to/sql/functions/", pool)
-    >>> await ensure_functions_loaded([
-    ...     "CREATE OR REPLACE FUNCTION my_func() RETURNS void AS $$ ... $$ LANGUAGE plpgsql;",
-    ... ], pool)
     """
-
     sql_statements: list[str] = []
 
-    if isinstance(functions, (str, Path)):
-        path = Path(functions)
-        if path.is_dir():
-            for sql_file in sorted(path.glob("*.sql")):
+    def _collect_from_path(p: Path) -> None:
+        if p.is_dir():
+            for sql_file in sorted(p.glob("*.sql")):
                 sql_statements.append(sql_file.read_text())
-        elif path.is_file():
-            sql_statements.append(path.read_text())
+        elif p.is_file():
+            sql_statements.append(p.read_text())
         else:
             # Treat as raw SQL string
-            sql_statements.append(str(functions))
+            sql_statements.append(str(p))
+
+    if isinstance(functions, (str, Path)):
+        _collect_from_path(Path(functions))
     elif isinstance(functions, list):
-        sql_statements = functions
+        for item in functions:
+            if isinstance(item, (str, Path)):
+                path = Path(item)
+                # Heuristic: if it looks like a path that exists, treat as path;
+                # otherwise treat as raw SQL.
+                if path.exists() or (
+                    isinstance(item, Path)
+                    and not str(item).strip().upper().startswith("CREATE")
+                ):
+                    _collect_from_path(path)
+                else:
+                    sql_statements.append(str(item))
+            else:
+                raise TypeError(
+                    f"Expected str or Path in functions list, got {type(item).__name__}"
+                )
+    else:
+        raise TypeError(
+            f"functions must be str, Path or list thereof, got {type(functions).__name__}"
+        )
+
+    if not sql_statements:
+        return
 
     async with pool.acquire() as conn:
         for sql in sql_statements:
