@@ -25,7 +25,7 @@ from py_pgkit.db.settings import PgSettings
 
 async def ensure_functions_loaded(
     functions: list[str] | str | Path,
-    settings: PgSettings,
+    pool: asyncpg.pool,
 ) -> None:
     """
     Ensure custom SQL functions are loaded into the database.
@@ -39,17 +39,16 @@ async def ensure_functions_loaded(
     ----------
     functions : list[str] | str | Path
         Source of the SQL functions.
-    settings : PgSettings
-        Connection settings.
+    pool : asyncpg.pool
+        A postgres connection pool to the database.
 
     Examples
     --------
-    >>> await ensure_functions_loaded("/path/to/sql/functions/", settings)
+    >>> await ensure_functions_loaded("/path/to/sql/functions/", pool)
     >>> await ensure_functions_loaded([
     ...     "CREATE OR REPLACE FUNCTION my_func() RETURNS void AS $$ ... $$ LANGUAGE plpgsql;",
-    ... ], settings)
+    ... ], pool)
     """
-    pool = await get_pool(settings)
 
     sql_statements: list[str] = []
 

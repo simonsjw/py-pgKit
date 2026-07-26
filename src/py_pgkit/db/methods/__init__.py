@@ -50,7 +50,7 @@ Import Examples
 
 >>> # Option 3 – Top-level (already re-exported)
 >>> import py_pgkit as pgk
->>> await pgk.ensure_functions_loaded("/app/sql/functions/", settings)
+>>> await pgk.ensure_functions_loaded("/app/sql/functions/", pool)
 
 Design Philosophy
 -----------------
