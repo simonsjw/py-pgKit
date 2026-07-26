@@ -211,7 +211,7 @@ def get_partman_manager() -> PartmanManager:
 
 async def initialize_partman_manager(
     pool: asyncpg.Pool,
-    parent_table: str = "responses",
+    parent_table: str,
     control_column: str = "tstamp",
     premake: int = 14,
 ) -> PartmanManager:
@@ -223,7 +223,11 @@ async def initialize_partman_manager(
     manager = PartmanManager(pool)
     if not await manager.is_installed():
         raise RuntimeError("pg_partman extension is not installed in the database.")
-
+    if "." not in parent_table:
+        raise RuntimeError(
+            "ensure that all tables are schema qualified when using"
+            " the pg_partman extension. (eg. public.foo)"
+        )
     await manager.initialize(
         parent_table=parent_table,
         control_column=control_column,
