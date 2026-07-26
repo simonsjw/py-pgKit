@@ -25,7 +25,7 @@ from py_pgkit.db.settings import PgSettings
 
 async def ensure_functions_loaded(
     functions: list[str] | str | Path,
-    pool: asyncpg.pool,
+    pool: asyncpg.Pool,
 ) -> None:
     """
     Ensure custom SQL functions are loaded into the database.

@@ -83,83 +83,30 @@ class DatabaseBuilder:
         self._pool: asyncpg.Pool | None = None
         self._admin_pool: asyncpg.Pool | None = None
 
-    async def _get_pool(self) -> None:
-        """
-        Create a connection pool attached to the target database. Tablespaces
-        and databases can only be created from a connection that is not already inside
-        the target database. This means that we also need an admin database pool.
-
-        Returns
-        -------
-        None
-            The attribute self._pool is populated with an asyncpg.Pool.
-
-        See also
-        --------
-        _get_admin_pool
-        """
-        if self._pool is None:
-            self._pool = await get_pool(self.settings)
-        return None
-
-    
-    async def _get_admin_pool(self) -> None:
-        """
-        Create a connection pool attached to the admin database.  Same user as
-        settings, just admin db. The database is almost always postgres.  Tablespaces
-        and databases can only be created from a connection that is not already inside
-        the target database.
-
-        Returns
-        -------
-        None
-            The attribute self._admin_pool is populated with an asyncpg.Pool.
-        
-        See also
-        --------
-        _get_pool
-        """
-        if self._admin_pool is None:
-            self._admin_pool = await get_pool(
-                settings.model_copy(update={"database": self.admin_db})
-            )
-
-        return None
-
     async def build(self) -> None:
         """
         Run the full incremental build sequence.
 
-        Order of operations is deliberately:
+        Order of operations:
 
-        1. Create tablespace (if requested) – uses admin database/connection
-        2. Create database (if requested) – uses admin database/connection
+        1. Create tablespace (if requested) – uses admin connection
+        2. Create database (if requested) – uses admin connection
         3. Connect to the now-existing target database
         4. Create extensions, tables, triggers/functions
         """
         logger.info("Starting DatabaseBuilder for %s", self.settings.database)
 
-        # ------------------------------------------------------------------
-        # Phase 1 – infrastructure that must be created from an admin connection
-        # ------------------------------------------------------------------
-        try: 
-            self._admin_pool: asyncpg.Pool = self._get_admin_pool()
-        except:
-            
-        
+        # Phase 1 – must use admin connection
+        await self._get_admin_pool()
+
         if self.create_tablespace and self.settings.tablespace_name:
             await self._ensure_tablespace()
 
         if self.create_database:
             await self._ensure_database()
 
-        # ------------------------------------------------------------------
-        # Phase 2 – now safe to connect to the target database
-        # ------------------------------------------------------------------
-        try: 
-            self._pool: asyncpg.Pool = self._get_pool()
-        except:
-
+        # Phase 2 – now safe to use the target database
+        await self._get_pool()
 
         if self.create_extensions and self.settings.extensions:
             await self._ensure_extensions()
@@ -173,8 +120,28 @@ class DatabaseBuilder:
         logger.info("DatabaseBuilder completed successfully")
 
     # ------------------------------------------------------------------
-    # Internal helpers (unchanged from your latest version)
+    # Internal helpers
     # ------------------------------------------------------------------
+
+    async def _get_pool(self) -> asyncpg.Pool:
+        """Return (and cache) a pool connected to the target database."""
+        if self._pool is None:
+            self._pool = await get_pool(self.settings)
+        return self._pool
+
+    async def _get_admin_pool(self) -> asyncpg.Pool:
+        """
+        Return (and cache) a pool connected to the maintenance database.
+
+        Tablespaces and databases can only be created from a connection
+        that is not already inside the target database.
+        """
+        if self._admin_pool is None:
+            admin_settings = self.settings.model_copy(
+                update={"database": self.admin_db}
+            )
+            self._admin_pool = await get_pool(admin_settings)
+        return self._admin_pool
 
     async def _get_engine(self) -> AsyncEngine:
         if self.engine is None:
@@ -186,20 +153,30 @@ class DatabaseBuilder:
             self.engine = create_async_engine(url, echo=self.settings.echo)
         return self.engine
 
-    async def _ensure_tablespace(self) -> None:
-        """
-        Create the tablespace if it does not already exist.
+    async def _ensure_extensions(self) -> None:
+        """Create listed extensions if they do not exist."""
 
-        Uses the admin connection because CREATE TABLESPACE cannot be
-        issued from inside the target database.
-        """
+        pool: asyncpg.Pool = self._pool
+
+        async with pool.acquire() as conn:
+            for ext in self.settings.extensions or []:
+                exists = await conn.fetchval(
+                    "SELECT 1 FROM pg_extension WHERE extname = $1", ext
+                )
+                if exists:
+                    continue
+                await conn.execute(f'CREATE EXTENSION IF NOT EXISTS "{ext}"')
+                logger.info("Created extension %s", ext)
+
+    async def _ensure_tablespace(self) -> None:
+        """Create the tablespace if it does not already exist."""
         ts_name = self.settings.tablespace_name
         ts_path = self.settings.tablespace_path
 
         if not ts_name:
             return
 
-        admin_pool = self._admin_pool
+        admin_pool = await self._get_admin_pool()
 
         async with admin_pool.acquire() as conn:
             exists = await conn.fetchval(
@@ -211,23 +188,16 @@ class DatabaseBuilder:
 
             if not ts_path:
                 raise ValueError(
-                    f"tablespace_path must be provided when creating "
-                    f"tablespace '{ts_name}'"
+                    f"tablespace_path must be provided when creating tablespace '{ts_name}'"
                 )
 
             await conn.execute(f"CREATE TABLESPACE {ts_name} LOCATION '{ts_path}'")
             logger.info("Created tablespace %s at %s", ts_name, ts_path)
 
     async def _ensure_database(self) -> None:
-        """
-        Create the target database if it does not already exist.
-
-        Uses an admin connection. If a tablespace was requested it is
-        attached at creation time.
-        """
+        """Create the target database if it does not already exist."""
         db_name = self.settings.database
-
-        admin_pool = self._admin_pool
+        admin_pool = await self._get_admin_pool()
 
         async with admin_pool.acquire() as conn:
             exists = await conn.fetchval(
@@ -239,15 +209,14 @@ class DatabaseBuilder:
 
             ts_clause = ""
             if self.settings.tablespace_name:
-                ts_clause: str = f" TABLESPACE {self.settings.tablespace_name}"
+                ts_clause = f" TABLESPACE {self.settings.tablespace_name}"
 
             await conn.execute(f'CREATE DATABASE "{db_name}"{ts_clause}')
             logger.info("Created database %s", db_name)
 
     async def _ensure_extensions(self) -> None:
         """Create listed extensions if they do not exist."""
-
-        pool: asyncpg.Pool = self._pool
+        pool = await self._get_pool()
 
         async with pool.acquire() as conn:
             for ext in self.settings.extensions or []:
@@ -269,7 +238,6 @@ class DatabaseBuilder:
         if not self.models:
             return
 
-        # Collect all tables from all Base classes
         all_tables: list[Table] = []
         for model in self.models:
             if hasattr(model, "metadata"):
@@ -278,21 +246,18 @@ class DatabaseBuilder:
         if not all_tables:
             return
 
-        # Build dependency graph
         graph = nx.DiGraph()
         for table in all_tables:
             graph.add_node(table.name)
             for fk in table.foreign_keys:
                 graph.add_edge(fk.column.table.name, table.name)
 
-        # Topological sort (NetworkX)
         try:
             ordered_names = list(nx.topological_sort(graph))
         except nx.NetworkXUnfeasible:
             logger.warning("Circular dependency detected in table graph!")
             ordered_names = [t.name for t in all_tables]
 
-        # Create in order
         engine = await self._get_engine()
         async with engine.begin() as conn:
             for name in ordered_names:
@@ -301,10 +266,13 @@ class DatabaseBuilder:
                 logger.debug("Ensured table %s", name)
 
     async def _ensure_triggers_and_functions(self) -> None:
-        functions = getattr(self, "functions", None)
-        if functions:
-            await ensure_functions_loaded(functions, self._pool)
-            logger.info("Custom functions and triggers loaded")
+        """Load custom SQL functions/triggers if any were supplied."""
+        if not self.functions:
+            return
+
+        pool = await self._get_pool()
+        await ensure_functions_loaded(self.functions, pool)
+        logger.info("Custom functions and triggers loaded")
 
     # ------------------------------------------------------------------
     # Partitioning Support
@@ -320,18 +288,6 @@ class DatabaseBuilder:
 
         This is the recommended way to enable automatic partition creation
         and maintenance using `PartmanManager`.
-
-        Parameters
-        ----------
-        partitioned_tables : list of str, optional
-            Fully qualified table names. Defaults to ["responses"].
-        premake : int, default 14
-            Number of future partitions to pre-create.
-
-        Returns
-        -------
-        DatabaseBuilder
-            Self for method chaining.
         """
         if partitioned_tables is None:
             partitioned_tables = ["responses"]
