@@ -299,7 +299,7 @@ class DatabaseBuilder:
                             "SCHEMA partman"
                         )
                     else:
-                        sql = f'CREATE EXTENSION IF NOT EXISTS "{ext}"'"
+                        sql = "CREATE EXTENSION IF NOT EXISTS \"" + ext + "\""
                         await conn.execute(sql)
                     logger.info("Created extension %s", ext)
                 except Exception as exc:
