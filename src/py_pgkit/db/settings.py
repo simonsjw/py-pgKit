@@ -15,6 +15,8 @@ Key improvements over the legacy implementation:
 - Dict-like interface preserved for backward compatibility
 - Immutable by default (frozen=True)
 - Rich serialization (model_dump, model_dump_json, etc.)
+- Optional bootstrap (privileged) credentials for CREATE DATABASE /
+  CREATE EXTENSION while ordinary runtime credentials remain least-privilege
 
 All existing uppercase `DB_*` key patterns continue to work via
 `model_validate()`.
@@ -25,11 +27,9 @@ PgPoolManager, DatabaseBuilder, and the logging subsystem.
 
 from __future__ import annotations
 
-import os
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import (
-    BaseModel,
     ConfigDict,
     Field,
     field_validator,
@@ -39,8 +39,7 @@ from pydantic_settings import BaseSettings
 
 
 class PgSettings(BaseSettings):
-    """
-    PostgreSQL connection and infrastructure settings.
+    """PostgreSQL connection and infrastructure settings.
 
     This dataclass-style model is the modern replacement for the original
     `ResolvedSettingsDict`. It supports the exact same input patterns used
@@ -50,22 +49,32 @@ class PgSettings(BaseSettings):
     Parameters
     ----------
     host : str
-        Database host (defaults to 'localhost').
+        Database host (defaults to ``'localhost'``).
     port : int
         Database port (defaults to 5432).
     database : str
         Database name.
     user : str
-        Database user.
-    password : str | None
-        Database password (can be None for peer auth, etc.).
-    extensions : list[str] | None, optional
+        Ordinary (runtime) database role.  Used for table creation, triggers,
+        and day-to-day connections.
+    password : str or None
+        Password for ``user`` (may be ``None`` for peer authentication).
+    bootstrap_user : str or None, optional
+        Privileged role used **only** for administrative steps
+        (``CREATE DATABASE``, ``CREATE TABLESPACE``, ``CREATE EXTENSION``).
+        When supplied, ``DatabaseBuilder`` connects with this identity for
+        those steps while continuing to use ``user`` / ``password`` for
+        everything else.  Must be paired with ``bootstrap_password``.
+    bootstrap_password : str or None, optional
+        Password for ``bootstrap_user``.  Must be supplied together with
+        ``bootstrap_user`` (both present or both omitted).
+    extensions : list of str or None, optional
         PostgreSQL extensions to ensure are installed
-        (e.g. ['uuid-ossp', 'pg_trgm']).
-    tablespace_name : str | None, optional
+        (e.g. ``['uuid-ossp', 'pg_trgm']``).
+    tablespace_name : str or None, optional
         Name of the tablespace to create/use.
-    tablespace_path : str | None, optional
-        Filesystem path for the tablespace (required if tablespace_name
+    tablespace_path : str or None, optional
+        Filesystem path for the tablespace (required if ``tablespace_name``
         is provided and the tablespace does not already exist).
     pool_min_size : int, optional
         Minimum connections in the pool (default 5).
@@ -74,10 +83,19 @@ class PgSettings(BaseSettings):
     echo : bool, optional
         Whether to echo SQLAlchemy / asyncpg statements (debug only).
 
+    Notes
+    -----
+    Privilege separation
+        The recommended pattern is to keep ``user`` as a least-privilege
+        application role and supply ``bootstrap_user`` (typically a
+        superuser or a role with ``CREATEDB`` + extension privileges) only
+        for bootstrap / migration jobs.  Ordinary runtime processes should
+        never receive the bootstrap credentials.
+
     Attributes
     ----------
-    All fields are accessible both as attributes and via dict-like
-    interface (see __getitem__, keys, items, etc.).
+    All fields are accessible both as attributes and via the dict-like
+    interface (see ``__getitem__``, ``keys``, ``items``, etc.).
 
     Examples
     --------
@@ -86,16 +104,27 @@ class PgSettings(BaseSettings):
     ...     host="localhost",
     ...     port=5432,
     ...     database="mydb",
-    ...     user="postgres",
+    ...     user="appuser",
     ...     password="secret",
     ...     extensions=["uuid-ossp"],
     ... )
     >>> settings.host
     'localhost'
-    >>> dict(settings)  # dict-like access still works
-    {'host': 'localhost', ...}
 
-    # From legacy uppercase dict (full backward compatibility)
+    With optional bootstrap credentials (privileged steps only):
+
+    >>> settings = PgSettings(
+    ...     database="mydb",
+    ...     user="appuser",
+    ...     password="app-secret",
+    ...     bootstrap_user="postgres",
+    ...     bootstrap_password="super-secret",
+    ... )
+    >>> settings.bootstrap_user
+    'postgres'
+
+    From a legacy uppercase dict (full backward compatibility):
+
     >>> legacy = {
     ...     "DB_HOST": "db.example.com",
     ...     "DB_PORT": "5432",
@@ -122,6 +151,23 @@ class PgSettings(BaseSettings):
     user: str = Field(..., alias="DB_USER")
     password: str | None = Field(default=None, alias="PASSWORD")
 
+    # Optional privileged identity for administrative steps only
+    bootstrap_user: str | None = Field(
+        default=None,
+        description=(
+            "Privileged role used solely for CREATE DATABASE / CREATE "
+            "TABLESPACE / CREATE EXTENSION. Ordinary runtime work continues "
+            "to use ``user`` / ``password``."
+        ),
+    )
+    bootstrap_password: str | None = Field(
+        default=None,
+        description=(
+            "Password for ``bootstrap_user``. Must be supplied together with "
+            "``bootstrap_user`` (both present or both omitted)."
+        ),
+    )
+
     # Infrastructure
     extensions: list[str] | None = Field(
         default=None,
@@ -146,12 +192,28 @@ class PgSettings(BaseSettings):
         return v
 
     @model_validator(mode="after")
-    def _validate_tablespace(self) -> PgSettings:
-        """If tablespace_name is given, tablespace_path should also be provided
-        (unless the tablespace already exists — we can't know that here)."""
+    def _validate_tablespace_and_bootstrap(self) -> PgSettings:
+        """Cross-field validation for tablespace and bootstrap credentials.
+
+        - tablespace_path is only required when the tablespace must be created
+          (the builder raises a clearer error later if it is missing at that
+          moment).
+        - bootstrap_user and bootstrap_password must both be present or both
+          omitted so callers cannot accidentally supply a half-configured
+          privileged identity.
+        """
         if self.tablespace_name and not self.tablespace_path:
-            # We allow it; the builder will raise a clearer error later
+            # Allowed here; DatabaseBuilder will raise a clearer error if
+            # the tablespace does not already exist.
             pass
+
+        has_bootstrap_user = self.bootstrap_user is not None
+        has_bootstrap_password = self.bootstrap_password is not None
+        if has_bootstrap_user != has_bootstrap_password:
+            raise ValueError(
+                "bootstrap_user and bootstrap_password must both be provided "
+                "or both omitted"
+            )
         return self
 
     # ------------------------------------------------------------------
@@ -159,7 +221,6 @@ class PgSettings(BaseSettings):
     # ------------------------------------------------------------------
     def __getitem__(self, key: str) -> Any:
         """Allow settings['DB_HOST'] style access (legacy compatibility)."""
-        # Support both new and legacy key styles
         key_map = {
             "DB_HOST": "host",
             "DB_PORT": "port",
@@ -169,6 +230,8 @@ class PgSettings(BaseSettings):
             "EXTENSIONS": "extensions",
             "TABLESPACE_NAME": "tablespace_name",
             "TABLESPACE_PATH": "tablespace_path",
+            "BOOTSTRAP_USER": "bootstrap_user",
+            "BOOTSTRAP_PASSWORD": "bootstrap_password",
         }
         attr = key_map.get(key, key.lower())
         if hasattr(self, attr):
@@ -183,6 +246,8 @@ class PgSettings(BaseSettings):
             "DB_NAME",
             "DB_USER",
             "PASSWORD",
+            "BOOTSTRAP_USER",
+            "BOOTSTRAP_PASSWORD",
             "EXTENSIONS",
             "TABLESPACE_NAME",
             "TABLESPACE_PATH",
@@ -191,23 +256,33 @@ class PgSettings(BaseSettings):
             "database",
             "user",
             "password",
+            "bootstrap_user",
+            "bootstrap_password",
             "extensions",
             "tablespace_name",
             "tablespace_path",
         ]
 
     def values(self) -> list[Any]:
-        """Return list of values in same order as keys()."""
-        return [
-            getattr(self, k.lower().replace("db_", "")) for k in self.keys()[:8]
-        ] + [
-            getattr(self, k)
-            for k in ["extensions", "tablespace_name", "tablespace_path"]
+        """Return list of values in the same order as keys()."""
+        modern = [
+            self.host,
+            self.port,
+            self.database,
+            self.user,
+            self.password,
+            self.bootstrap_user,
+            self.bootstrap_password,
+            self.extensions,
+            self.tablespace_name,
+            self.tablespace_path,
         ]
+        # Legacy keys come first in keys(); mirror the same values.
+        return modern + modern
 
     def items(self) -> list[tuple[str, Any]]:
         """Return (key, value) pairs."""
-        return list(zip(self.keys(), self.values()))
+        return list(zip(self.keys(), self.values(), strict=True))
 
     def __iter__(self):
         return iter(self.keys())
@@ -218,7 +293,6 @@ class PgSettings(BaseSettings):
     def model_dump(self, **kwargs) -> dict[str, Any]:
         """Override to also include legacy uppercase keys for compatibility."""
         data = super().model_dump(**kwargs)
-        # Add legacy keys
         data.update(
             {
                 "DB_HOST": data["host"],
@@ -226,6 +300,8 @@ class PgSettings(BaseSettings):
                 "DB_NAME": data["database"],
                 "DB_USER": data["user"],
                 "PASSWORD": data["password"],
+                "BOOTSTRAP_USER": data.get("bootstrap_user"),
+                "BOOTSTRAP_PASSWORD": data.get("bootstrap_password"),
                 "EXTENSIONS": data.get("extensions"),
                 "TABLESPACE_NAME": data.get("tablespace_name"),
                 "TABLESPACE_PATH": data.get("tablespace_path"),
@@ -234,28 +310,28 @@ class PgSettings(BaseSettings):
         return data
 
     async def async_ping(self) -> bool:
-        """
-        Asynchronously test connectivity to the PostgreSQL server.
+        """Asynchronously test connectivity to the PostgreSQL server.
 
         Uses a temporary connection from the pool (or creates one if none
         exists yet). This is the async equivalent of the original
-        `ResolvedSettingsDict.async_ping()`.
+        ``ResolvedSettingsDict.async_ping()``.
 
         Returns
         -------
         bool
             True if connection succeeds, False otherwise (never raises
-            for ping — could use try/except to get the exception).
+            for ping — callers that need the exception should open a
+            connection themselves).
 
         Examples
         --------
         >>> import asyncio
         >>> from py_pgkit.db.settings import PgSettings
-        >>> settings = PgSettings(database="test")
+        >>> settings = PgSettings(database="test", user="postgres")
         >>> asyncio.run(settings.async_ping())
         True
         """
-        from .pool import get_pool                                                        # local import to avoid circularity
+        from .pool import get_pool  # local import to avoid circularity
 
         try:
             pool = await get_pool(self)
@@ -266,7 +342,13 @@ class PgSettings(BaseSettings):
             return False
 
     def __repr__(self) -> str:
+        bootstrap = (
+            f", bootstrap_user={self.bootstrap_user!r}"
+            if self.bootstrap_user is not None
+            else ""
+        )
         return (
             f"PgSettings(host={self.host!r}, port={self.port}, "
-            f"database={self.database!r}, user={self.user!r})"
+            f"database={self.database!r}, user={self.user!r}"
+            f"{bootstrap})"
         )
