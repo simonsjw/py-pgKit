@@ -335,12 +335,14 @@ class DatabaseBuilder:
         """Grant the ordinary role full use of schema partman.
 
         ``pg_partman`` is installed into schema ``partman`` under the
-        bootstrap identity.  Without these grants the ordinary role cannot
-        call ``partman.create_parent`` or ``partman.run_maintenance``,
-        producing ``permission denied for schema partman``.
+        bootstrap identity.  ``partman.create_parent`` is SECURITY INVOKER:
+        the caller can enter the function with USAGE+EXECUTE, but its
+        internal ``EXECUTE`` creates objects inside schema ``partman`` and
+        therefore needs ``CREATE`` on that schema.  ``GRANT ALL ON SCHEMA``
+        covers both USAGE and CREATE.
 
         Idempotent.  No-op when bootstrap credentials are absent or the
-        extension / schema is not present.
+        schema is not present.
         """
         pool = await self._bootstrap_target_pool()
         if pool is None:
@@ -354,9 +356,9 @@ class DatabaseBuilder:
             if not schema_exists:
                 return
 
-            # Schema usage + existing objects
+            # ALL on schema = USAGE + CREATE (required for internal EXECUTE)
             await conn.execute(
-                f'GRANT USAGE ON SCHEMA partman TO "{owner}"'
+                f'GRANT ALL ON SCHEMA partman TO "{owner}"'
             )
             await conn.execute(
                 f'GRANT ALL ON ALL TABLES IN SCHEMA partman TO "{owner}"'
@@ -367,21 +369,44 @@ class DatabaseBuilder:
             await conn.execute(
                 f'GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA partman TO "{owner}"'
             )
-            # Future objects created by maintenance
+            # pg_partman 5.x exposes some entry points as procedures
+            try:
+                await conn.execute(
+                    f'GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA partman '
+                    f'TO "{owner}"'
+                )
+            except Exception as proc_exc:
+                logger.debug(
+                    "GRANT EXECUTE ON ALL PROCEDURES in partman skipped: %s",
+                    proc_exc,
+                )
+            try:
+                await conn.execute(
+                    f'GRANT USAGE ON ALL TYPES IN SCHEMA partman TO "{owner}"'
+                )
+            except Exception as type_exc:
+                logger.debug(
+                    "GRANT USAGE ON ALL TYPES in partman skipped: %s",
+                    type_exc,
+                )
+            # Future objects created by maintenance as the bootstrap role
             await conn.execute(
-                f'ALTER DEFAULT PRIVILEGES IN SCHEMA partman '
+                f'ALTER DEFAULT PRIVILEGES FOR ROLE '
+                f'"{self.settings.bootstrap_user}" IN SCHEMA partman '
                 f'GRANT ALL ON TABLES TO "{owner}"'
             )
             await conn.execute(
-                f'ALTER DEFAULT PRIVILEGES IN SCHEMA partman '
+                f'ALTER DEFAULT PRIVILEGES FOR ROLE '
+                f'"{self.settings.bootstrap_user}" IN SCHEMA partman '
                 f'GRANT ALL ON SEQUENCES TO "{owner}"'
             )
             await conn.execute(
-                f'ALTER DEFAULT PRIVILEGES IN SCHEMA partman '
+                f'ALTER DEFAULT PRIVILEGES FOR ROLE '
+                f'"{self.settings.bootstrap_user}" IN SCHEMA partman '
                 f'GRANT EXECUTE ON FUNCTIONS TO "{owner}"'
             )
             logger.info(
-                "Granted partman schema privileges to %s in database %s",
+                "Granted full partman schema privileges to %s in database %s",
                 owner,
                 self.settings.database,
             )
