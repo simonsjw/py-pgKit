@@ -20,11 +20,11 @@ Privilege separation
 --------------------
 When ``PgSettings.bootstrap_user`` / ``bootstrap_password`` are supplied,
 administrative steps (``CREATE DATABASE``, ``CREATE TABLESPACE``,
-``CREATE EXTENSION``) are performed under that privileged identity.
-Table creation, triggers, functions and the runtime pool continue to use
-the ordinary ``user`` / ``password``.  This lets bootstrap jobs elevate
-only for the steps that require it while ordinary application roles stay
-least-privilege.
+``CREATE EXTENSION``, and schema privilege grants) are performed under that
+privileged identity. Table creation, triggers, functions and the runtime
+pool continue to use the ordinary ``user`` / ``password``.  This lets
+bootstrap jobs elevate only for the steps that require it while ordinary
+application roles stay least-privilege.
 """
 
 from __future__ import annotations
@@ -54,8 +54,9 @@ class DatabaseBuilder:
     settings : PgSettings
         Connection and infrastructure settings.  When
         ``settings.bootstrap_user`` is set, that identity is used for
-        ``CREATE DATABASE``, ``CREATE TABLESPACE`` and ``CREATE EXTENSION``;
-        the ordinary ``user`` / ``password`` are used for everything else.
+        ``CREATE DATABASE``, ``CREATE TABLESPACE``, ``CREATE EXTENSION``
+        and granting the ordinary role access to ``public``; the ordinary
+        ``user`` / ``password`` are used for everything else.
     admin_db : str
         Name of the maintenance database used for ``CREATE DATABASE`` /
         ``CREATE TABLESPACE`` (default ``"postgres"``).
@@ -74,8 +75,10 @@ class DatabaseBuilder:
           (the ordinary role performs every step).
         - Bootstrap credentials present → privileged steps run as
           ``bootstrap_user``; table DDL and the runtime pool stay on the
-          ordinary role.  This is the recommended pattern when the runtime
-          role is intentionally non-superuser.
+          ordinary role.  After ``CREATE DATABASE``, the ordinary role is
+          set as ``OWNER`` and granted ``USAGE, CREATE`` on schema
+          ``public`` so PostgreSQL 15+ default privileges do not block
+          table creation.
 
     See Also
     --------
@@ -113,11 +116,14 @@ class DatabaseBuilder:
         Order of operations
         -------------------
         1. Create tablespace (if requested) — admin / bootstrap connection.
-        2. Create database (if requested) — admin / bootstrap connection.
-        3. Connect to the target database.
-        4. Create extensions — bootstrap identity when supplied, otherwise
+        2. Create database (if requested) — admin / bootstrap connection,
+           with ``OWNER`` set to the ordinary runtime role.
+        3. Ensure the ordinary role can create objects in schema ``public``
+           (PostgreSQL 15+ compatibility).
+        4. Connect to the target database.
+        5. Create extensions — bootstrap identity when supplied, otherwise
            the ordinary role.
-        5. Create tables, triggers and functions — ordinary role.
+        6. Create tables, triggers and functions — ordinary role.
         """
         logger.info("Starting DatabaseBuilder for %s", self.settings.database)
 
@@ -129,6 +135,10 @@ class DatabaseBuilder:
 
         if self.create_database:
             await self._ensure_database()
+
+        # Ensure ordinary role can DDL in public (needed on PG 15+ even when
+        # the database already existed from a prior bootstrap).
+        await self._ensure_public_schema_privileges()
 
         # Phase 2 — target database
         await self._get_pool()
@@ -233,9 +243,13 @@ class DatabaseBuilder:
     async def _ensure_database(self) -> None:
         """Create the target database if it does not already exist.
 
-        Runs under the admin / bootstrap identity.
+        Runs under the admin / bootstrap identity.  When creating a new
+        database the ordinary runtime role (``settings.user``) is set as
+        ``OWNER`` so it can create objects under PostgreSQL 15+ default
+        privilege rules.
         """
         db_name = self.settings.database
+        owner = self.settings.user
         admin_pool = await self._get_admin_pool()
 
         async with admin_pool.acquire() as conn:
@@ -250,8 +264,63 @@ class DatabaseBuilder:
             if self.settings.tablespace_name:
                 ts_clause = f" TABLESPACE {self.settings.tablespace_name}"
 
-            await conn.execute(f'CREATE DATABASE "{db_name}"{ts_clause}')
-            logger.info("Created database %s", db_name)
+            # OWNER ensures the runtime role owns public and can CREATE.
+            await conn.execute(
+                f'CREATE DATABASE "{db_name}" OWNER "{owner}"{ts_clause}'
+            )
+            logger.info("Created database %s owned by %s", db_name, owner)
+
+    async def _ensure_public_schema_privileges(self) -> None:
+        """Grant the ordinary role USAGE + CREATE on schema public.
+
+        Required on PostgreSQL 15+ where ``CREATE`` is revoked from
+        ``PUBLIC`` by default.  When the database was created earlier by a
+        superuser without transferring ownership, table DDL as the ordinary
+        role fails with ``permission denied for schema public``.
+
+        Runs only when bootstrap credentials are available (the only case
+        where we can reliably elevate).  Idempotent.
+        """
+        if self.settings.bootstrap_user is None:
+            return
+
+        owner = self.settings.user
+        priv_settings = self.settings.model_copy(
+            update={
+                "user": self.settings.bootstrap_user,
+                "password": self.settings.bootstrap_password,
+            }
+        )
+        pool = await get_pool(priv_settings)
+        async with pool.acquire() as conn:
+            # Transfer ownership of public when possible so the runtime role
+            # fully controls the schema; fall back to GRANT if ALTER fails
+            # (e.g. objects already owned by others).
+            try:
+                await conn.execute(
+                    f'ALTER SCHEMA public OWNER TO "{owner}"'
+                )
+                logger.info(
+                    "Set schema public owner to %s in database %s",
+                    owner,
+                    self.settings.database,
+                )
+            except Exception as alter_exc:
+                logger.debug(
+                    "ALTER SCHEMA public OWNER TO %s failed (%s); "
+                    "falling back to GRANT",
+                    owner,
+                    alter_exc,
+                )
+                await conn.execute(
+                    f'GRANT USAGE, CREATE ON SCHEMA public TO "{owner}"'
+                )
+                logger.info(
+                    "Granted USAGE, CREATE on schema public to %s "
+                    "in database %s",
+                    owner,
+                    self.settings.database,
+                )
 
     async def _ensure_extensions(self) -> None:
         """Create listed extensions if they do not exist.
@@ -303,15 +372,16 @@ class DatabaseBuilder:
                         await conn.execute(sql)
                     logger.info("Created extension %s", ext)
                 except Exception as exc:
-                    logger.error("Failed to create extension %s: %s", ext, exc)
+                    logger.error("Failed to create extension %s: %s", ext, exp)
                     raise
 
     async def _ensure_tables(self) -> None:
         """Create tables from SQLAlchemy models in dependency order.
 
         Uses NetworkX to build a directed graph of foreign-key dependencies
-        and then performs a topological sort.  Always runs under the
-        ordinary runtime credentials.
+        and then performs a topological sort.  Self-referential foreign keys
+        are ignored for ordering purposes (PostgreSQL allows them once the
+        table exists).  Always runs under the ordinary runtime credentials.
         """
         if not self.models:
             return
@@ -328,7 +398,11 @@ class DatabaseBuilder:
         for table in all_tables:
             graph.add_node(table.name)
             for fk in table.foreign_keys:
-                graph.add_edge(fk.column.table.name, table.name)
+                parent = fk.column.table.name
+                # Self-referential FKs are valid DDL but create cycles in the
+                # dependency graph; skip them for topological ordering.
+                if parent != table.name:
+                    graph.add_edge(parent, table.name)
 
         try:
             ordered_names = list(nx.topological_sort(graph))
