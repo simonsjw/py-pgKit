@@ -372,7 +372,7 @@ class DatabaseBuilder:
                         await conn.execute(sql)
                     logger.info("Created extension %s", ext)
                 except Exception as exc:
-                    logger.error("Failed to create extension %s: %s", ext, exp)
+                    logger.error("Failed to create extension %s: %s", ext, exc)
                     raise
 
     async def _ensure_tables(self) -> None:
