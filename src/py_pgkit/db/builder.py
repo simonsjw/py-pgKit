@@ -55,8 +55,8 @@ class DatabaseBuilder:
         Connection and infrastructure settings.  When
         ``settings.bootstrap_user`` is set, that identity is used for
         ``CREATE DATABASE``, ``CREATE TABLESPACE``, ``CREATE EXTENSION``
-        and granting the ordinary role access to ``public``; the ordinary
-        ``user`` / ``password`` are used for everything else.
+        and granting the ordinary role access to ``public`` / ``partman``;
+        the ordinary ``user`` / ``password`` are used for everything else.
     admin_db : str
         Name of the maintenance database used for ``CREATE DATABASE`` /
         ``CREATE TABLESPACE`` (default ``"postgres"``).
@@ -76,9 +76,10 @@ class DatabaseBuilder:
         - Bootstrap credentials present → privileged steps run as
           ``bootstrap_user``; table DDL and the runtime pool stay on the
           ordinary role.  After ``CREATE DATABASE``, the ordinary role is
-          set as ``OWNER`` and granted ``USAGE, CREATE`` on schema
-          ``public`` so PostgreSQL 15+ default privileges do not block
-          table creation.
+          set as ``OWNER`` of schema ``public``.  After ``pg_partman`` is
+          installed, the ordinary role is granted full use of schema
+          ``partman`` so ``partman.create_parent`` / ``run_maintenance``
+          work without further elevation.
 
     See Also
     --------
@@ -123,7 +124,9 @@ class DatabaseBuilder:
         4. Connect to the target database.
         5. Create extensions — bootstrap identity when supplied, otherwise
            the ordinary role.
-        6. Create tables, triggers and functions — ordinary role.
+        6. Grant the ordinary role access to schema ``partman`` when
+           ``pg_partman`` is present.
+        7. Create tables, triggers and functions — ordinary role.
         """
         logger.info("Starting DatabaseBuilder for %s", self.settings.database)
 
@@ -145,6 +148,10 @@ class DatabaseBuilder:
 
         if self.create_extensions and self.settings.extensions:
             await self._ensure_extensions()
+
+        # partman schema is owned by whoever created the extension; grant the
+        # ordinary role access so create_parent / run_maintenance work.
+        await self._ensure_partman_schema_privileges()
 
         if self.create_tables and self.models:
             await self._ensure_tables()
@@ -207,6 +214,18 @@ class DatabaseBuilder:
             )
             self.engine = create_async_engine(url, echo=self.settings.echo)
         return self.engine
+
+    async def _bootstrap_target_pool(self) -> asyncpg.Pool | None:
+        """Pool connected to the target DB as the bootstrap user, or None."""
+        if self.settings.bootstrap_user is None:
+            return None
+        priv_settings = self.settings.model_copy(
+            update={
+                "user": self.settings.bootstrap_user,
+                "password": self.settings.bootstrap_password,
+            }
+        )
+        return await get_pool(priv_settings)
 
     async def _ensure_tablespace(self) -> None:
         """Create the tablespace if it does not already exist.
@@ -271,31 +290,21 @@ class DatabaseBuilder:
             logger.info("Created database %s owned by %s", db_name, owner)
 
     async def _ensure_public_schema_privileges(self) -> None:
-        """Grant the ordinary role USAGE + CREATE on schema public.
+        """Grant the ordinary role ownership of schema public.
 
         Required on PostgreSQL 15+ where ``CREATE`` is revoked from
         ``PUBLIC`` by default.  When the database was created earlier by a
         superuser without transferring ownership, table DDL as the ordinary
         role fails with ``permission denied for schema public``.
 
-        Runs only when bootstrap credentials are available (the only case
-        where we can reliably elevate).  Idempotent.
+        Runs only when bootstrap credentials are available.  Idempotent.
         """
-        if self.settings.bootstrap_user is None:
+        pool = await self._bootstrap_target_pool()
+        if pool is None:
             return
 
         owner = self.settings.user
-        priv_settings = self.settings.model_copy(
-            update={
-                "user": self.settings.bootstrap_user,
-                "password": self.settings.bootstrap_password,
-            }
-        )
-        pool = await get_pool(priv_settings)
         async with pool.acquire() as conn:
-            # Transfer ownership of public when possible so the runtime role
-            # fully controls the schema; fall back to GRANT if ALTER fails
-            # (e.g. objects already owned by others).
             try:
                 await conn.execute(
                     f'ALTER SCHEMA public OWNER TO "{owner}"'
@@ -321,6 +330,61 @@ class DatabaseBuilder:
                     owner,
                     self.settings.database,
                 )
+
+    async def _ensure_partman_schema_privileges(self) -> None:
+        """Grant the ordinary role full use of schema partman.
+
+        ``pg_partman`` is installed into schema ``partman`` under the
+        bootstrap identity.  Without these grants the ordinary role cannot
+        call ``partman.create_parent`` or ``partman.run_maintenance``,
+        producing ``permission denied for schema partman``.
+
+        Idempotent.  No-op when bootstrap credentials are absent or the
+        extension / schema is not present.
+        """
+        pool = await self._bootstrap_target_pool()
+        if pool is None:
+            return
+
+        owner = self.settings.user
+        async with pool.acquire() as conn:
+            schema_exists = await conn.fetchval(
+                "SELECT 1 FROM pg_namespace WHERE nspname = 'partman'"
+            )
+            if not schema_exists:
+                return
+
+            # Schema usage + existing objects
+            await conn.execute(
+                f'GRANT USAGE ON SCHEMA partman TO "{owner}"'
+            )
+            await conn.execute(
+                f'GRANT ALL ON ALL TABLES IN SCHEMA partman TO "{owner}"'
+            )
+            await conn.execute(
+                f'GRANT ALL ON ALL SEQUENCES IN SCHEMA partman TO "{owner}"'
+            )
+            await conn.execute(
+                f'GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA partman TO "{owner}"'
+            )
+            # Future objects created by maintenance
+            await conn.execute(
+                f'ALTER DEFAULT PRIVILEGES IN SCHEMA partman '
+                f'GRANT ALL ON TABLES TO "{owner}"'
+            )
+            await conn.execute(
+                f'ALTER DEFAULT PRIVILEGES IN SCHEMA partman '
+                f'GRANT ALL ON SEQUENCES TO "{owner}"'
+            )
+            await conn.execute(
+                f'ALTER DEFAULT PRIVILEGES IN SCHEMA partman '
+                f'GRANT EXECUTE ON FUNCTIONS TO "{owner}"'
+            )
+            logger.info(
+                "Granted partman schema privileges to %s in database %s",
+                owner,
+                self.settings.database,
+            )
 
     async def _ensure_extensions(self) -> None:
         """Create listed extensions if they do not exist.
