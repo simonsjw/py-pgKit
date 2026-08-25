@@ -79,6 +79,18 @@ class PartmanManager:
             self.logger.warning("pg_partman not installed — skipping registration")
             return False
 
+        # Idempotent check
+        already = await self.pool.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM partman.part_config WHERE parent_table = $1)",
+            parent_table,
+        )
+        if already:
+            self.logger.info(
+                "pg_partman parent already registered: %s — skipping create_parent",
+                parent_table,
+            )
+            return True
+
         try:
             await self.pool.execute(
                 """
