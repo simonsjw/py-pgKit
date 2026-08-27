@@ -74,12 +74,12 @@ class PartmanManager:
         interval: str = "1 day",
         premake: int = 7,
         start_partition: str | None = None,
+        template_table: str | None = None,
     ) -> bool:
         if not await self.is_installed():
             self.logger.warning("pg_partman not installed — skipping registration")
             return False
 
-        # Idempotent check
         already = await self.pool.fetchval(
             "SELECT EXISTS (SELECT 1 FROM partman.part_config WHERE parent_table = $1)",
             parent_table,
@@ -100,7 +100,8 @@ class PartmanManager:
                     p_type            := 'range',
                     p_interval        := $3,
                     p_premake         := $4,
-                    p_start_partition := $5
+                    p_start_partition := $5,
+                    p_template_table  := $6
                 )
                 """,
                 parent_table,
@@ -108,8 +109,13 @@ class PartmanManager:
                 interval,
                 premake,
                 start_partition,
+                template_table,
             )
-            self.logger.info("pg_partman parent registered: %s", parent_table)
+            self.logger.info(
+                "pg_partman parent registered: %s (template=%s)",
+                parent_table,
+                template_table,
+            )
             return True
         except Exception as exc:
             self.logger.error(
@@ -124,6 +130,7 @@ class PartmanManager:
         interval: str = "1 day",
         premake: int | None = None,
         start_partition: date | None = None,
+        template_table: str | None = None,
     ) -> bool:
         if start_partition is None:
             start_partition = date.today() - timedelta(days=1)
@@ -135,11 +142,12 @@ class PartmanManager:
             interval=interval,
             premake=premake,
             start_partition=start_partition.isoformat(),
+            template_table=template_table,
         )
         if not success:
             return False
 
-        await self.pool.execute(f"SELECT partman.run_maintenance('{parent_table}')")
+        await self.pool.execute("SELECT partman.run_maintenance($1)", parent_table)
 
         self.covered = CoveredRange(
             start=start_partition,

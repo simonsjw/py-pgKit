@@ -254,9 +254,7 @@ class DatabaseBuilder:
                     f"tablespace '{ts_name}'"
                 )
 
-            await conn.execute(
-                f"CREATE TABLESPACE {ts_name} LOCATION '{ts_path}'"
-            )
+            await conn.execute(f"CREATE TABLESPACE {ts_name} LOCATION '{ts_path}'")
             logger.info("Created tablespace %s at %s", ts_name, ts_path)
 
     async def _ensure_database(self) -> None:
@@ -306,9 +304,7 @@ class DatabaseBuilder:
         owner = self.settings.user
         async with pool.acquire() as conn:
             try:
-                await conn.execute(
-                    f'ALTER SCHEMA public OWNER TO "{owner}"'
-                )
+                await conn.execute(f'ALTER SCHEMA public OWNER TO "{owner}"')
                 logger.info(
                     "Set schema public owner to %s in database %s",
                     owner,
@@ -321,12 +317,9 @@ class DatabaseBuilder:
                     owner,
                     alter_exc,
                 )
-                await conn.execute(
-                    f'GRANT USAGE, CREATE ON SCHEMA public TO "{owner}"'
-                )
+                await conn.execute(f'GRANT USAGE, CREATE ON SCHEMA public TO "{owner}"')
                 logger.info(
-                    "Granted USAGE, CREATE on schema public to %s "
-                    "in database %s",
+                    "Granted USAGE, CREATE on schema public to %s in database %s",
                     owner,
                     self.settings.database,
                 )
@@ -357,9 +350,7 @@ class DatabaseBuilder:
                 return
 
             # ALL on schema = USAGE + CREATE (required for internal EXECUTE)
-            await conn.execute(
-                f'GRANT ALL ON SCHEMA partman TO "{owner}"'
-            )
+            await conn.execute(f'GRANT ALL ON SCHEMA partman TO "{owner}"')
             await conn.execute(
                 f'GRANT ALL ON ALL TABLES IN SCHEMA partman TO "{owner}"'
             )
@@ -372,8 +363,7 @@ class DatabaseBuilder:
             # pg_partman 5.x exposes some entry points as procedures
             try:
                 await conn.execute(
-                    f'GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA partman '
-                    f'TO "{owner}"'
+                    f'GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA partman TO "{owner}"'
                 )
             except Exception as proc_exc:
                 logger.debug(
@@ -391,17 +381,17 @@ class DatabaseBuilder:
                 )
             # Future objects created by maintenance as the bootstrap role
             await conn.execute(
-                f'ALTER DEFAULT PRIVILEGES FOR ROLE '
+                f"ALTER DEFAULT PRIVILEGES FOR ROLE "
                 f'"{self.settings.bootstrap_user}" IN SCHEMA partman '
                 f'GRANT ALL ON TABLES TO "{owner}"'
             )
             await conn.execute(
-                f'ALTER DEFAULT PRIVILEGES FOR ROLE '
+                f"ALTER DEFAULT PRIVILEGES FOR ROLE "
                 f'"{self.settings.bootstrap_user}" IN SCHEMA partman '
                 f'GRANT ALL ON SEQUENCES TO "{owner}"'
             )
             await conn.execute(
-                f'ALTER DEFAULT PRIVILEGES FOR ROLE '
+                f"ALTER DEFAULT PRIVILEGES FOR ROLE "
                 f'"{self.settings.bootstrap_user}" IN SCHEMA partman '
                 f'GRANT EXECUTE ON FUNCTIONS TO "{owner}"'
             )
@@ -449,15 +439,12 @@ class DatabaseBuilder:
                 try:
                     if ext == "pg_partman":
                         # Explicit schema is the most reliable installation path
+                        await conn.execute("CREATE SCHEMA IF NOT EXISTS partman")
                         await conn.execute(
-                            "CREATE SCHEMA IF NOT EXISTS partman"
-                        )
-                        await conn.execute(
-                            'CREATE EXTENSION IF NOT EXISTS "pg_partman" '
-                            "SCHEMA partman"
+                            'CREATE EXTENSION IF NOT EXISTS "pg_partman" SCHEMA partman'
                         )
                     else:
-                        sql = "CREATE EXTENSION IF NOT EXISTS \"" + ext + "\""
+                        sql = 'CREATE EXTENSION IF NOT EXISTS "' + ext + '"'
                         await conn.execute(sql)
                     logger.info("Created extension %s", ext)
                 except Exception as exc:
@@ -562,6 +549,7 @@ class DatabaseBuilder:
             success = await partman.create_parent(
                 parent_table=table,
                 premake=premake,
+                template_table=f"partman.template_public_{table.split('.')[-1]}",
             )
             if success:
                 await partman.ensure_partitions(table, days_ahead=premake)
