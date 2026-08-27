@@ -234,6 +234,7 @@ async def initialize_partman_manager(
     parent_table: str,
     control_column: str = "tstamp",
     premake: int = 14,
+    template_table: str | None = None,
 ) -> PartmanManager:
     """Initialize and cache a PartmanManager instance (call once at startup)."""
     global _partman_manager
@@ -252,6 +253,7 @@ async def initialize_partman_manager(
         parent_table=parent_table,
         control_column=control_column,
         premake=premake,
+        template_table=template_table,
     )
     _partman_manager = manager
     return manager
