@@ -126,7 +126,10 @@ class DatabaseBuilder:
            the ordinary role.
         6. Grant the ordinary role access to schema ``partman`` when
            ``pg_partman`` is present.
-        7. Create tables, triggers and functions — ordinary role.
+        7. Create tables — ordinary role.
+        8. Run partman maintenance as the ordinary role, then reown
+           any child or template still owned by another role.
+        9. Create triggers and functions — ordinary role.
         """
         logger.info("Starting DatabaseBuilder for %s", self.settings.database)
 
@@ -155,6 +158,11 @@ class DatabaseBuilder:
 
         if self.create_tables and self.models:
             await self._ensure_tables()
+
+        # Children must exist and be owned by the ordinary role before
+        # trigger DDL.  CREATE TRIGGER on a partitioned parent is applied
+        # to every child and requires ownership, not merely GRANT.
+        await self._ensure_partman_children()
 
         if self.create_triggers_and_functions:
             await self._ensure_triggers_and_functions()
@@ -492,6 +500,103 @@ class DatabaseBuilder:
                 table = next(t for t in all_tables if t.name == name)
                 await conn.run_sync(table.create, checkfirst=True)
                 logger.debug("Ensured table %s", name)
+
+    async def _ensure_partman_children(self) -> None:
+        """Create due partman children as the table owner, then fix stray owners.
+
+        No-op when `pg_partman` or `partman.part_config` is absent, so a
+        database that has not registered a parent yet is unchanged.
+        `run_maintenance` uses the ordinary pool: the role that creates a
+        child owns it.  Ownership repair uses the bootstrap pool, because
+        only the current owner or a superuser can `ALTER TABLE ... OWNER TO`.
+        `p_jobmon` is false so a stock install without `pg_jobmon` does not
+        fail the build.
+        """
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            has_partman = await conn.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'partman')"
+            )
+            if not has_partman:
+                return
+            has_config = await conn.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_schema = 'partman'
+                      AND table_name = 'part_config'
+                )
+                """
+            )
+            if not has_config:
+                return
+            parents = await conn.fetch(
+                "SELECT parent_table FROM partman.part_config"
+            )
+            for row in parents:
+                await conn.execute(
+                    """
+                    SELECT partman.run_maintenance(
+                        p_parent_table => $1,
+                        p_jobmon => false
+                    )
+                    """,
+                    row["parent_table"],
+                )
+                logger.info(
+                    "partman maintenance completed for %s", row["parent_table"]
+                )
+        await self._reown_partman_relations()
+
+    async def _reown_partman_relations(self) -> None:
+        """Give the ordinary role ownership of stray children and templates.
+
+        No-op without bootstrap credentials.  Existing children created by
+        an earlier maintenance run as another role are not fixed by
+        `run_maintenance` alone.
+        """
+        pool = await self._bootstrap_target_pool()
+        if pool is None:
+            return
+        owner = self.settings.user
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT n.nspname AS schema_name, c.relname AS table_name
+                FROM pg_inherits i
+                JOIN pg_class c ON c.oid = i.inhrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                JOIN pg_class p ON p.oid = i.inhparent
+                JOIN pg_namespace pn ON pn.oid = p.relnamespace
+                JOIN partman.part_config cfg
+                  ON cfg.parent_table = pn.nspname || '.' || p.relname
+                WHERE pg_get_userbyid(c.relowner) <> $1
+                UNION
+                SELECT n.nspname, c.relname
+                FROM partman.part_config cfg
+                JOIN pg_class c ON c.oid = to_regclass(cfg.template_table)
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE cfg.template_table IS NOT NULL
+                  AND pg_get_userbyid(c.relowner) <> $1
+                """,
+                owner,
+            )
+            for row in rows:
+                stmt = await conn.fetchval(
+                    "SELECT format("
+                    "'ALTER TABLE %I.%I OWNER TO %I', $1, $2, $3)",
+                    row["schema_name"],
+                    row["table_name"],
+                    owner,
+                )
+                await conn.execute(stmt)
+                logger.info(
+                    "Set owner of %s.%s to %s",
+                    row["schema_name"],
+                    row["table_name"],
+                    owner,
+                )
 
     async def _ensure_triggers_and_functions(self) -> None:
         """Load custom SQL functions / triggers if any were supplied.
