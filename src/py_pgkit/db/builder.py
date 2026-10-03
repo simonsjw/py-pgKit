@@ -531,9 +531,7 @@ class DatabaseBuilder:
             )
             if not has_config:
                 return
-            parents = await conn.fetch(
-                "SELECT parent_table FROM partman.part_config"
-            )
+            parents = await conn.fetch("SELECT parent_table FROM partman.part_config")
             for row in parents:
                 await conn.execute(
                     """
@@ -544,9 +542,7 @@ class DatabaseBuilder:
                     """,
                     row["parent_table"],
                 )
-                logger.info(
-                    "partman maintenance completed for %s", row["parent_table"]
-                )
+                logger.info("partman maintenance completed for %s", row["parent_table"])
         await self._reown_partman_relations()
 
     async def _reown_partman_relations(self) -> None:
@@ -585,7 +581,8 @@ class DatabaseBuilder:
             for row in rows:
                 stmt = await conn.fetchval(
                     "SELECT format("
-                    "'ALTER TABLE %I.%I OWNER TO %I', $1, $2, $3)",
+                    "'ALTER TABLE %I.%I OWNER TO %I', "
+                    "$1::text, $2::text, $3::text)",
                     row["schema_name"],
                     row["table_name"],
                     owner,
