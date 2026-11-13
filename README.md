@@ -76,16 +76,10 @@ asyncio.run(main())
 
 ## 📦 Installation
 
-```bash
-pip install py-pgkit
-```
-
-For development:
+From the Agentish checkout this package is a path dependency:
 
 ```bash
-git clone https://github.com/simonsjw/py-pgkit.git
-cd py-pgkit
-pip install -e ".[dev]"
+uv sync --all-extras
 ```
 
 ---

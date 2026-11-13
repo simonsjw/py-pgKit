@@ -47,7 +47,8 @@ Example invocation
 
 Requirements
 ------------
-    pip install py-pgkit[dev]   # or the editable install you already have
+    uv sync --all-extras
+    # from the Agentish checkout; this package is a path dependency
     PostgreSQL 14+ running and reachable
 """
 

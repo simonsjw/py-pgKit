@@ -32,7 +32,7 @@ pytest -q
 | `--lf` / `--last-failed`                       | Re-run only the tests that failed in the previous run                  | `pytest --lf`                                                        |
 | `--tb=short` / `long`                          | Control traceback length (short is usually enough)                     | `pytest --tb=short -q`                                               |
 | `-q --asyncio-mode=auto`                       | Explicitly force asyncio mode (already in config)                      | As shown in your command                                             |
-| `--cov=src/py_pgkit --cov-report=term-missing` | Code coverage (requires `pytest-cov`)                                  | `pip install pytest-cov && pytest --cov=...`                         |
+| `--cov=src/py_pgkit --cov-report=term-missing` | Code coverage (requires `pytest-cov`, not an Agentish extra)          | `uv run pytest --cov=src/py_pgkit --cov-report=term-missing`         |
 
 **Pro tip**: Add temporary `print("DEBUG:", mock_conn.execute.call_args)` inside a test (as already done in one place in `test_db_tools.py`) and run with `-s` to inspect exactly what SQL / arguments are being passed to the mock.
 

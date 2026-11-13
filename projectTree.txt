@@ -14,9 +14,8 @@
 │       │   └── __init__.py
 │       └── __init__.py
 ├── tests
-├── environment_grok.yml
 ├── pyproject.toml
 ├── README.md
 └── tree.txt
 
-8 directories, 12 files
+8 directories, 11 files
